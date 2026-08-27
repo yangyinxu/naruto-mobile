@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Local research data and generated UI
+data/runs/*
+!data/runs/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
+data/.uid-salt
+web/dist/
+playwright-report/
+test-results/
