@@ -99,7 +99,11 @@ const start = async () => {
     ? join(process.resourcesPath, 'app')
     : process.cwd();
   process.env.RESEARCH_RESOURCE_ROOT = resourceRoot;
-  process.env.RESEARCH_DEFAULT_DATA_DIR ??= join(electronApp.getPath('userData'), 'data');
+  process.env.RESEARCH_DEFAULT_DATA_DIR ??= join(
+    electronApp.getPath('documents'),
+    '火影手游玩家反馈调查工具',
+    'data'
+  );
   process.env.NO_OPEN = 'true';
 
   managerConfig = loadAppConfig();
