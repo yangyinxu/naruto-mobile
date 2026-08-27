@@ -83,6 +83,19 @@ npm test
 npm run build
 ```
 
+## 打包为单个 Windows EXE
+
+开发电脑运行以下命令即可生成免安装便携版：
+
+```powershell
+npm install
+npm run package:win
+```
+
+成品位于 `release/NarutoFeedbackResearch-0.1.0-portable.exe`。把这一个 EXE 复制给其他 Windows 电脑即可；目标电脑不需要安装 Node.js 或项目依赖，但真实调查仍需要 Chrome 144 或更新版本，并由用户按页面提示授权连接已登录的 B站账号。
+
+第一次运行时，Windows SmartScreen 可能会提示“未知发布者”，这是因为当前便携版尚未购买代码签名证书；用户确认来源可信后可选择继续运行。调查数据默认保存在当前 Windows 用户的应用数据目录，也可以在主页中改到其他文件夹。
+
 ## 项目结构
 
 ```text

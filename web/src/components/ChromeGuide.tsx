@@ -38,7 +38,12 @@ export const ChromeGuide = ({
   const [opening, setOpening] = useState(false);
   const [openMessage, setOpenMessage] = useState('');
   const [copyMessage, setCopyMessage] = useState('');
-  const chromeReady = chromeStatus?.connected && chromeStatus.loginState === 'logged_in';
+  const chromeTransitioning = connectingChrome
+    || chromeStatus?.state === 'connecting'
+    || chromeStatus?.state === 'disconnecting';
+  const chromeReady = chromeStatus?.state === 'connected'
+    && chromeStatus.connected
+    && chromeStatus.loginState === 'logged_in';
 
   const openSettings = async () => {
     setOpening(true);
@@ -150,11 +155,11 @@ export const ChromeGuide = ({
             {chromeReady ? (
               <div className="guide-finish-actions">
                 <button className="guide-finish-button" type="button" onClick={onBack}>连接成功，返回新建调查 <ArrowRight size={18}/></button>
-                <button className="guide-disconnect-button" type="button" disabled={(chromeStatus?.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={18}/>断开 Chrome</button>
+                <button className="guide-disconnect-button" type="button" disabled={chromeTransitioning || (chromeStatus?.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={18}/>断开 Chrome</button>
               </div>
             ) : (
-              <button className="guide-finish-button" type="button" disabled={connectingChrome || !chromeStatus?.remoteDebuggingEnabled} onClick={() => void onConnectChrome()}>
-                {connectingChrome || chromeStatus?.state === 'connecting' ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {connectingChrome ? '等待 Chrome 授权…' : chromeStatus?.connected ? '重新检查 B站登录' : '连接并检查 B站'}
+              <button className="guide-finish-button" type="button" disabled={chromeTransitioning || !chromeStatus?.remoteDebuggingEnabled} onClick={() => void onConnectChrome()}>
+                {chromeTransitioning ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {chromeStatus?.state === 'disconnecting' ? '正在断开 Chrome…' : connectingChrome || chromeStatus?.state === 'connecting' ? '等待 Chrome 授权…' : chromeStatus?.connected ? '重新检查 B站登录' : '连接并检查 B站'}
               </button>
             )}
           </div>

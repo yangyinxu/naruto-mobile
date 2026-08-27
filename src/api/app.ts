@@ -34,6 +34,7 @@ const mutationOriginGuard = (config: AppConfig) => (request: Request, response: 
 interface AppDependencies {
   chooseDataDirectory: typeof chooseDataDirectory;
   saveDataRoot: typeof saveDataRoot;
+  webRoot: string;
 }
 
 export const createApp = (
@@ -238,7 +239,7 @@ export const createApp = (
     });
   }));
 
-  const webRoot = join(process.cwd(), 'web', 'dist');
+  const webRoot = dependencies.webRoot ?? join(process.cwd(), 'web', 'dist');
   if (existsSync(webRoot)) {
     app.use(express.static(webRoot, {index: false, maxAge: '1h'}));
     app.get('*', (_request, response) => response.sendFile(join(webRoot, 'index.html')));

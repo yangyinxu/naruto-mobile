@@ -149,5 +149,7 @@ data/cache/*
 !data/cache/.gitkeep
 data/.uid-salt
 web/dist/
+build/
+release/
 playwright-report/
 test-results/

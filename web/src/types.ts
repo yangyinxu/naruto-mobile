@@ -122,7 +122,7 @@ export interface AppSettings {
 }
 
 export interface ChromeConnectionStatus {
-  state: 'not_ready' | 'ready' | 'connecting' | 'connected' | 'error';
+  state: 'not_ready' | 'ready' | 'connecting' | 'disconnecting' | 'connected' | 'error';
   remoteDebuggingEnabled: boolean;
   connected: boolean;
   loginState: 'unknown' | 'logged_in' | 'logged_out';

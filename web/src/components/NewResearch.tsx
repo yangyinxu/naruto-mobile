@@ -42,7 +42,12 @@ export const NewResearch = ({
   const [browserWindowCount, setBrowserWindowCount] = useState(settings.defaults.browserWindowCount);
   const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
   const keywordList = useMemo(() => keywords.split(/\r?\n|，|,/).map((item) => item.trim()).filter(Boolean), [keywords]);
-  const chromeReady = chromeStatus?.connected && chromeStatus.loginState === 'logged_in';
+  const chromeTransitioning = connectingChrome
+    || chromeStatus?.state === 'connecting'
+    || chromeStatus?.state === 'disconnecting';
+  const chromeReady = chromeStatus?.state === 'connected'
+    && chromeStatus.connected
+    && chromeStatus.loginState === 'logged_in';
   const chromeActionLabel = !chromeStatus?.remoteDebuggingEnabled
     ? '开启并连接 Chrome'
     : chromeStatus.connected && chromeStatus.loginState !== 'logged_in'
@@ -160,15 +165,15 @@ export const NewResearch = ({
             </div>
           </div>
           <p className={`chrome-connect-status ${chromeStatus?.state === 'error' || chromeStatus?.loginState === 'logged_out' ? 'warning' : ''}`}>
-            {chromeReady ? <CircleCheck size={17}/> : chromeStatus?.state === 'connecting' ? <LoaderCircle className="spin" size={17}/> : <CircleAlert size={17}/>}
+            {chromeReady ? <CircleCheck size={17}/> : chromeTransitioning ? <LoaderCircle className="spin" size={17}/> : <CircleAlert size={17}/>}
             <span>{chromeStatus?.message ?? '正在检测 Chrome…'}</span>
           </p>
           <div className="chrome-connect-actions">
-            <button className="chrome-settings-button" type="button" disabled={connectingChrome} onClick={() => void onConnectChrome()}>
-              {connectingChrome || chromeStatus?.state === 'connecting' ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {connectingChrome ? '等待 Chrome 授权…' : chromeActionLabel}
+            <button className="chrome-settings-button" type="button" disabled={chromeTransitioning} onClick={() => void onConnectChrome()}>
+              {chromeTransitioning ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {chromeStatus?.state === 'disconnecting' ? '正在断开 Chrome…' : connectingChrome || chromeStatus?.state === 'connecting' ? '等待 Chrome 授权…' : chromeActionLabel}
             </button>
             <button className="chrome-guide-link" type="button" onClick={onOpenGuide}><BookOpen size={17}/>图文教程</button>
-            {chromeStatus?.connected && <button className="chrome-guide-link" type="button" disabled={(chromeStatus.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={17}/>断开</button>}
+            {chromeStatus?.connected && <button className="chrome-guide-link" type="button" disabled={chromeTransitioning || (chromeStatus.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={17}/>断开</button>}
           </div>
           <p>工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。</p>
         </section>

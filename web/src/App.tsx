@@ -87,6 +87,7 @@ export default function App() {
   };
 
   const connectChrome = async () => {
+    if (chromeStatus?.state === 'disconnecting') return;
     if (!chromeStatus?.remoteDebuggingEnabled) {
       setView('guide');
       await openChromeSettings();
@@ -108,9 +109,15 @@ export default function App() {
   const disconnectChrome = async () => {
     setError('');
     try {
+      setChromeStatus((current) => current ? {
+        ...current,
+        state: 'disconnecting',
+        message: '正在安全断开 Chrome，请稍候。'
+      } : current);
       setChromeStatus(await api.disconnectChrome());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setChromeStatus(await api.chromeStatus().catch(() => chromeStatus));
     }
   };
 

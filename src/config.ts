@@ -51,7 +51,8 @@ export const localUidSalt = (dataRoot: string) => {
 
 /** Loads local-only settings without silently choosing a remote listener. */
 export const loadAppConfig = (): AppConfig => {
-  const dataRoot = resolve(process.env.RESEARCH_DATA_DIR?.trim() || readSavedDataRoot() || 'data');
+  const defaultDataRoot = process.env.RESEARCH_DEFAULT_DATA_DIR?.trim() || 'data';
+  const dataRoot = resolve(process.env.RESEARCH_DATA_DIR?.trim() || readSavedDataRoot() || defaultDataRoot);
   return {
     host: '127.0.0.1',
     port: positiveInteger(process.env.PORT, 3765),

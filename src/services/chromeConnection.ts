@@ -1,11 +1,12 @@
 import {readFile} from 'node:fs/promises';
+import {Socket} from 'node:net';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {Browser, BrowserContext, chromium, Page} from 'playwright';
 import {AppConfig} from '../config';
 
 export type BilibiliLoginState = 'unknown' | 'logged_in' | 'logged_out';
-export type ChromeConnectionState = 'not_ready' | 'ready' | 'connecting' | 'connected' | 'error';
+export type ChromeConnectionState = 'not_ready' | 'ready' | 'connecting' | 'disconnecting' | 'connected' | 'error';
 
 export interface ChromeConnectionStatus {
   state: ChromeConnectionState;
@@ -30,6 +31,7 @@ interface BilibiliAccount {
 
 type ChromeConnector = (endpoint: string, options: {timeout: number}) => Promise<Browser>;
 type TextReader = (path: string, encoding: BufferEncoding) => Promise<string>;
+type EndpointProbe = (endpoint: ChromeEndpoint) => Promise<boolean>;
 
 export class ChromeConnectionError extends Error {
   readonly statusCode = 409;
@@ -88,14 +90,37 @@ const validatedEndpoint = (contents: string): ChromeEndpoint => {
   return {webSocketUrl: webSocketUrl.toString()};
 };
 
+/** Rejects stale DevToolsActivePort files left behind after Chrome exits. */
+export const chromeEndpointIsListening = (
+  endpoint: ChromeEndpoint,
+  timeoutMs = 750
+) => new Promise<boolean>((resolveProbe) => {
+  const url = new URL(endpoint.webSocketUrl);
+  const socket = new Socket();
+  let settled = false;
+  const finish = (listening: boolean) => {
+    if (settled) return;
+    settled = true;
+    socket.destroy();
+    resolveProbe(listening);
+  };
+  socket.setTimeout(timeoutMs);
+  socket.once('connect', () => finish(true));
+  socket.once('timeout', () => finish(false));
+  socket.once('error', () => finish(false));
+  socket.connect(Number(url.port), url.hostname);
+});
+
 export const discoverChromeEndpoint = async (
   config: Pick<AppConfig, 'browserChannel'>,
-  reader: TextReader = readFile
+  reader: TextReader = readFile,
+  probe: EndpointProbe = chromeEndpointIsListening
 ) => {
   const userDataDirectory = chromeUserDataDirectory(config.browserChannel);
   if (!userDataDirectory) return undefined;
   try {
-    return validatedEndpoint(await reader(join(userDataDirectory, 'DevToolsActivePort'), 'utf8'));
+    const endpoint = validatedEndpoint(await reader(join(userDataDirectory, 'DevToolsActivePort'), 'utf8'));
+    return await probe(endpoint) ? endpoint : undefined;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
@@ -108,7 +133,7 @@ const accountFromPage = async (page: Page): Promise<BilibiliAccount> => {
     timeout: 15_000
   });
   if (!response?.ok()) throw new Error(`B站登录检查返回 ${response?.status() ?? '未知状态'}。`);
-  const text = await page.locator('body').innerText({timeout: 5_000});
+  const text = (await response.text()).replace(/^\uFEFF/, '');
   const value = JSON.parse(text) as {
     code?: number;
     data?: {isLogin?: boolean; uname?: string; mid?: number | string};
@@ -127,6 +152,7 @@ export class ChromeConnectionService {
   private browser?: Browser;
   private context?: BrowserContext;
   private connecting?: Promise<ChromeConnectionStatus>;
+  private disconnecting?: Promise<void>;
   private account: BilibiliAccount = {loginState: 'unknown'};
   private lastError = '';
   private activeInvestigations = 0;
@@ -155,11 +181,23 @@ export class ChromeConnectionService {
         ? `Chrome 已连接，B站账号 ${this.account.accountName ?? ''} 可以开始调查。`
         : this.account.loginState === 'logged_out'
           ? 'Chrome 已连接，但尚未检测到已登录的 B站账号。'
-          : 'Chrome 已连接，但暂时无法确认 B站登录状态。'
+          : this.lastError || 'Chrome 已连接，但暂时无法确认 B站登录状态。'
     };
   }
 
   async status(): Promise<ChromeConnectionStatus> {
+    if (this.disconnecting) {
+      return {
+        state: 'disconnecting',
+        remoteDebuggingEnabled: true,
+        connected: this.connected(),
+        loginState: this.account.loginState,
+        accountName: this.account.accountName,
+        accountUidSuffix: this.account.accountUidSuffix,
+        activeInvestigations: this.activeInvestigations,
+        message: '正在安全断开 Chrome，请稍候。'
+      };
+    }
     if (this.connecting) {
       return {
         state: 'connecting',
@@ -186,7 +224,7 @@ export class ChromeConnectionService {
         connected: false,
         loginState: 'unknown',
         activeInvestigations: this.activeInvestigations,
-        message: '请先在 Chrome 中开启远程调试。'
+        message: '请保持 Chrome 打开，并在 Chrome 中开启远程调试。'
       };
     } catch (error) {
       return {
@@ -202,18 +240,24 @@ export class ChromeConnectionService {
 
   private async inspectAccount() {
     if (!this.context) throw new ChromeConnectionError('Chrome 连接已经断开，请重新连接。');
-    const page = await this.context.newPage();
+    let page: Page | undefined;
     try {
+      page = await this.context.newPage();
       this.account = await accountFromPage(page);
+      this.lastError = '';
     } catch (error) {
       this.account = {loginState: 'unknown'};
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = error instanceof Error && error.message.startsWith('B站登录检查返回')
+        ? `${error.message} 请确认 B站可以正常打开，然后重新检查。`
+        : 'Chrome 已连接，但暂时无法检查 B站登录。请确认网络正常，然后点击“重新检查 B站登录”。';
+      throw new ChromeConnectionError(this.lastError);
     } finally {
-      await page.close().catch(() => undefined);
+      await page?.close().catch(() => undefined);
     }
   }
 
   async connect(): Promise<ChromeConnectionStatus> {
+    if (this.disconnecting) await this.disconnecting;
     if (this.connecting) return this.connecting;
     if (this.connected()) {
       await this.inspectAccount();
@@ -233,8 +277,9 @@ export class ChromeConnectionService {
       throw new ChromeConnectionError('尚未发现 Chrome 连接。请先打开远程调试开关，然后重试。');
     }
     this.lastError = '';
+    let browser: Browser;
     try {
-      const browser = await this.connector(endpoint.webSocketUrl, {timeout: 30_000});
+      browser = await this.connector(endpoint.webSocketUrl, {timeout: 30_000});
       const context = browser.contexts()[0];
       if (!context) {
         await browser.close().catch(() => undefined);
@@ -247,18 +292,23 @@ export class ChromeConnectionService {
         this.browser = undefined;
         this.context = undefined;
         this.account = {loginState: 'unknown'};
+        this.lastError = '';
         this.activeInvestigations = 0;
       });
-      await this.inspectAccount();
-      return this.connectedStatus();
     } catch (error) {
       this.browser = undefined;
       this.context = undefined;
       this.account = {loginState: 'unknown'};
-      this.lastError = error instanceof Error ? error.message : String(error);
-      if (error instanceof ChromeConnectionError) throw error;
-      throw new ChromeConnectionError('无法连接 Chrome。请确认远程调试已开启，并在 Chrome 弹窗中点击“允许”。');
+      if (error instanceof ChromeConnectionError) {
+        this.lastError = error.message;
+        throw error;
+      }
+      const friendlyMessage = '无法连接 Chrome。请保持 Chrome 打开、确认远程调试已开启，并在 Chrome 弹窗中点击“允许”。';
+      this.lastError = friendlyMessage;
+      throw new ChromeConnectionError(friendlyMessage);
     }
+    await this.inspectAccount();
+    return this.connectedStatus();
   }
 
   async acquire(): Promise<{context: BrowserContext; release: () => void}> {
@@ -280,16 +330,44 @@ export class ChromeConnectionService {
     };
   }
 
-  async disconnect() {
+  private async disconnectOnce() {
     if (this.activeInvestigations > 0) {
       throw new ChromeConnectionError('调查正在使用 Chrome，请先暂停或等待调查完成。');
     }
     const browser = this.browser;
-    this.browser = undefined;
-    this.context = undefined;
-    this.account = {loginState: 'unknown'};
+    if (browser) {
+      try {
+        await browser.close({reason: '用户主动断开调查工具'});
+      } catch {
+        if (browser.isConnected()) {
+          throw new ChromeConnectionError('Chrome 连接尚未断开，请稍候再试。');
+        }
+      }
+    }
+    if (this.browser === browser) {
+      this.browser = undefined;
+      this.context = undefined;
+      this.account = {loginState: 'unknown'};
+      this.activeInvestigations = 0;
+    }
     this.lastError = '';
-    await browser?.close().catch(() => undefined);
+  }
+
+  async disconnect() {
+    if (this.activeInvestigations > 0) {
+      throw new ChromeConnectionError('调查正在使用 Chrome，请先暂停或等待调查完成。');
+    }
+    if (this.connecting) await this.connecting.catch(() => undefined);
+    if (!this.disconnecting) {
+      this.disconnecting = this.disconnectOnce();
+      try {
+        await this.disconnecting;
+      } finally {
+        this.disconnecting = undefined;
+      }
+    } else {
+      await this.disconnecting;
+    }
     return this.status();
   }
 }

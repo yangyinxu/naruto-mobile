@@ -33,7 +33,10 @@ export class RuleClassifier {
     private readonly relevance: RelevanceConfig
   ) {}
 
-  static async load(configDirectory = join(process.cwd(), 'config')) {
+  static async load(configDirectory = join(
+    process.env.RESEARCH_RESOURCE_ROOT?.trim() || process.cwd(),
+    'config'
+  )) {
     const [taxonomy, relevance] = await Promise.all([
       loadJson<TaxonomyConfig>(join(configDirectory, 'taxonomy.json')),
       loadJson<RelevanceConfig>(join(configDirectory, 'relevance.json'))

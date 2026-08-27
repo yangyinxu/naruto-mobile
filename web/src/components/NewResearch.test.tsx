@@ -106,6 +106,18 @@ describe('NewResearch', () => {
     expect(screen.getByRole('button', {name: /^开始调查/})).toBeEnabled();
   });
 
+  it('locks connection actions until Chrome has completely disconnected', () => {
+    const disconnectingStatus: ChromeConnectionStatus = {
+      ...chromeProps().chromeStatus,
+      state: 'disconnecting',
+      message: '正在安全断开 Chrome，请稍候。'
+    };
+    render(<NewResearch {...chromeProps()} chromeStatus={disconnectingStatus} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByRole('button', {name: /正在断开 Chrome/})).toBeDisabled();
+    expect(screen.getByRole('button', {name: /^断开$/})).toBeDisabled();
+    expect(screen.getByRole('button', {name: /连接 Chrome 后开始/})).toBeDisabled();
+  });
+
   it('lets the user open the native data location picker', () => {
     const onSelectDataRoot = vi.fn().mockResolvedValue(undefined);
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={onSelectDataRoot} onOpenGuide={vi.fn()}/>);
