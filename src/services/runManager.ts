@@ -23,6 +23,7 @@ interface ActiveRun {
 }
 
 const activeStates = new Set<RunState>(['discovering', 'collecting', 'pause_requested', 'processing']);
+const collectionTimerStates = new Set<RunState>(['created', 'discovering', 'collecting', 'pause_requested']);
 
 /** Coordinates one local collector per run and preserves cooperative pause semantics. */
 export class RunManager {
@@ -83,14 +84,23 @@ export class RunManager {
     return () => this.events.off('manifest', listener);
   }
 
+  private withLiveElapsed(manifest: RunManifest) {
+    const active = this.active.get(manifest.id);
+    if (!active || !collectionTimerStates.has(manifest.state)) return manifest;
+    return {
+      ...manifest,
+      activeElapsedMs: active.baseElapsedMs + Math.max(0, Date.now() - active.startedAt)
+    };
+  }
+
   private emit(manifest: RunManifest) {
-    this.events.emit('manifest', manifest);
+    this.events.emit('manifest', this.withLiveElapsed(manifest));
   }
 
   private async update(runId: string, updater: (current: RunManifest) => RunManifest | Promise<RunManifest>) {
     const manifest = await this.store.updateManifest(runId, updater);
     this.emit(manifest);
-    return manifest;
+    return this.withLiveElapsed(manifest);
   }
 
   private async recordEvent(
@@ -118,7 +128,7 @@ export class RunManager {
   }
 
   async get(runId: string) {
-    return this.store.getManifest(runId);
+    return this.withLiveElapsed(await this.store.getManifest(runId));
   }
 
   async pause(runId: string) {

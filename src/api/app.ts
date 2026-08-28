@@ -259,12 +259,18 @@ export const createApp = (
     });
     response.flushHeaders();
     const send = (manifest: Awaited<ReturnType<RunManager['get']>>) => {
-      if (manifest.id === runId) response.write(`data: ${JSON.stringify(manifest)}\n\n`);
+      if (manifest.id === runId && !response.destroyed && !response.writableEnded) {
+        response.write(`data: ${JSON.stringify(manifest)}\n\n`);
+      }
     };
     send(await manager.get(runId));
     const unsubscribe = manager.subscribe(send);
+    const liveSnapshot = setInterval(() => {
+      void manager.get(runId).then(send).catch(() => undefined);
+    }, 1_000);
     const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 15_000);
     request.on('close', () => {
+      clearInterval(liveSnapshot);
       clearInterval(heartbeat);
       unsubscribe();
     });

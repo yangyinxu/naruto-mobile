@@ -101,3 +101,42 @@ test('switches the active data directory and blocks changes during collection', 
     await rm(directory, {recursive: true, force: true});
   }
 });
+
+test('reports live elapsed time between persisted collection checkpoints', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-live-timer-'));
+  const config: AppConfig = {
+    host: '127.0.0.1',
+    port: 3765,
+    dataRoot: directory,
+    browserChannel: 'chrome',
+    browserHeadless: true,
+    openBrowser: false,
+    uidSalt: 'test-salt',
+    aiModel: 'gpt-5.6-luna',
+    aiReasoningEffort: 'medium',
+    aiBatchSize: 10,
+    aiConcurrency: 3
+  };
+  try {
+    const manager = new RunManager(new FileRunStore(directory), config);
+    await manager.initialize();
+    const started = await manager.start(normalizeResearchRequest({
+      keywords: ['火影忍者手游'],
+      durationMinutes: 1,
+      mode: 'demo'
+    }));
+    const first = await manager.get(started.id);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const second = await manager.get(started.id);
+
+    assert.ok(second.activeElapsedMs >= first.activeElapsedMs + 50);
+
+    await manager.pause(started.id);
+    const paused = await waitFor(manager, started.id, (state) => state === 'paused');
+    const pausedElapsedMs = paused.activeElapsedMs;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal((await manager.get(started.id)).activeElapsedMs, pausedElapsedMs);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
