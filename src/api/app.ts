@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import express, {NextFunction, Request, Response} from 'express';
 import {AppConfig} from '../config';
 import {normalizeResearchRequest, RequestValidationError} from '../domain/validation';
+import {buildReportData} from '../processing/reporter';
 import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../services/chromeSettings';
 import {chooseDataDirectory} from '../services/dataDirectoryPicker';
 import {saveDataRoot} from '../services/dataRootSettings';
@@ -67,6 +68,13 @@ export const createApp = (
     apiVersion: RESEARCH_API_VERSION,
     dataRoot: config.dataRoot,
     dataRootLocked: Boolean(process.env.RESEARCH_DATA_DIR?.trim()),
+    analysis: {
+      aiConfigured: Boolean(config.openAiApiKey),
+      model: config.aiModel,
+      reasoningEffort: config.aiReasoningEffort,
+      liveMode: 'ai',
+      demoMode: 'rule_demo'
+    },
     defaults: {
       durationMinutes: 5,
       contentWindowDays: 30,
@@ -104,7 +112,12 @@ export const createApp = (
     response.json({runs: await manager.list()});
   }));
   app.post('/api/runs', asyncRoute(async (request, response) => {
-    const manifest = await manager.start(normalizeResearchRequest(request.body));
+    const normalized = normalizeResearchRequest(request.body);
+    if (normalized.mode === 'live' && !config.openAiApiKey) {
+      response.status(409).json({message: '真实调查需要先配置 OPENAI_API_KEY；演示模式仍可使用本地规则。'});
+      return;
+    }
+    const manifest = await manager.start(normalized);
     response.status(201).json({run: manifest});
   }));
   app.get('/api/runs/:runId', asyncRoute(async (request, response) => {
@@ -182,6 +195,9 @@ export const createApp = (
   app.post('/api/runs/:runId/finalize', asyncRoute(async (request, response) => {
     response.json({run: await manager.finalize(request.params.runId)});
   }));
+  app.post('/api/runs/:runId/reanalyze', asyncRoute(async (request, response) => {
+    response.json({run: await manager.reanalyze(request.params.runId)});
+  }));
   app.post('/api/runs/:runId/extend', asyncRoute(async (request, response) => {
     response.json({run: await manager.extend(request.params.runId, Number(request.body?.minutes))});
   }));
@@ -217,6 +233,21 @@ export const createApp = (
       return;
     }
     response.type('text/markdown; charset=utf-8').send(await manager.store.readReport(request.params.runId));
+  }));
+  app.get('/api/runs/:runId/report-data', asyncRoute(async (request, response) => {
+    const runId = request.params.runId;
+    const manifest = await manager.get(runId);
+    if (!manifest.reportReady) {
+      response.status(409).json({message: '报告还没有生成完成。'});
+      return;
+    }
+    const [contents, opinions, classifications, quality] = await Promise.all([
+      manager.store.readContents(runId),
+      manager.store.readProcessedOpinions(runId),
+      manager.store.readClassifications(runId),
+      manager.store.readQualityReport(runId)
+    ]);
+    response.json({report: buildReportData(manifest, contents, opinions, classifications, quality)});
   }));
   app.get('/api/runs/:runId/events', asyncRoute(async (request, response) => {
     const runId = request.params.runId;

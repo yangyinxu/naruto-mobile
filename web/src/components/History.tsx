@@ -20,7 +20,7 @@ export const History = ({runs, onOpen, onBrowse, onOpenFolder}: Props) => (
           <article className="run-row" key={run.id}>
             <button className="run-overview" onClick={() => onOpen(run)}>
               <div className="run-icon">{run.state === 'paused' ? <PauseCircle/> : run.reportReady ? <FileText/> : <PlayCircle/>}</div>
-              <div className="run-main"><div><strong>{run.request.name}</strong><StatusBadge state={run.state}/></div><span>{run.statusMessage}</span></div>
+              <div className="run-main"><div><strong>{run.request.name}</strong><StatusBadge state={run.state} phase={run.progress?.phase} mode={run.request.mode}/></div><span>{run.statusMessage}</span></div>
               <div className="run-meta"><span><Clock3 size={14}/>{run.request.durationMinutes} 分钟</span><span>{new Date(run.createdAt).toLocaleString('zh-CN')}</span></div>
               <div className="run-count"><strong>{run.counts.opinions}</strong><span>条意见</span></div>
             </button>

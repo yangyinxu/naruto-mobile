@@ -10,6 +10,8 @@ raw/contents.jsonl              视频和动态元数据
 raw/opinions.jsonl              标题、评论和回复
 processed/opinions.jsonl        标准化和精确去重后的意见
 processed/classifications.jsonl 多主题分析结果
+processed/ai-classifications.jsonl  Luna 正式结构化分析结果
+processed/ai-cache.jsonl        可恢复、按输入哈希复用的 AI 结果缓存
 processed/quality-report.json   去重、有效性和质量统计
 reports/report.md               可独立阅读的最终报告
 ```
@@ -48,7 +50,7 @@ reports/report.md               可独立阅读的最终报告
 
 清单中的 `counts.validOpinions` 专指通过过滤的观众意见；创作者标题单独保留，但不计入玩家样本量。页面未公开、当时未加载或无法可靠识别的字段保持缺失，不猜测或伪造。
 
-分类记录保存相关性、多选主题、主题级情绪、行为意图、玩家自述分层、严重度、可行动性、置信度、分类器版本和命中证据。
+分类记录保存相关性、信息类型、洞察价值（强/弱/无）、明确主张、具体性信号、报告准入、多选主题、主题级情绪、行为意图、玩家自述分层、严重度、可行动性、置信度、分析模式、模型版本、原因代码和逐字证据。真实调查先排除本地硬噪声，再由 Luna-low 做三态高召回初筛，详细与不确定项交给 Luna-medium；演示调查使用本地规则。真实模式发送给 AI 的输入不包含用户名、UID、用户主页或作者哈希。
 
 主题允许多选。玩家分层只能根据用户明确自述，不根据昵称或语气推断。
 

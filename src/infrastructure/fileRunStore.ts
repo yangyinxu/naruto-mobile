@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
+  AiClassificationCacheRecord,
   ClassificationRecord,
   ContentRecord,
   OpinionRecord,
@@ -106,6 +107,7 @@ export class FileRunStore {
       updatedAt: now,
       activeElapsedMs: 0,
       statusMessage: '调查已创建，正在准备采集。',
+      progress: {phase: 'preparing'},
       counts: {
         candidates: 0,
         contents: 0,
@@ -219,13 +221,49 @@ export class FileRunStore {
     await writeFile(this.path(runId, 'processed', 'opinions.jsonl'), value ? `${value}\n` : '', 'utf8');
   }
 
+  async readProcessedOpinions(runId: string) {
+    return readJsonLines<OpinionRecord>(this.path(runId, 'processed', 'opinions.jsonl'));
+  }
+
   async writeClassifications(runId: string, items: ClassificationRecord[]) {
     const value = items.map((item) => JSON.stringify(item)).join('\n');
     await writeFile(this.path(runId, 'processed', 'classifications.jsonl'), value ? `${value}\n` : '', 'utf8');
   }
 
+  async readClassifications(runId: string) {
+    return readJsonLines<ClassificationRecord>(this.path(runId, 'processed', 'classifications.jsonl'));
+  }
+
+  async readAiClassificationCache(runId: string) {
+    return readJsonLines<AiClassificationCacheRecord>(this.path(runId, 'processed', 'ai-cache.jsonl'));
+  }
+
+  async appendAiClassificationCache(runId: string, items: AiClassificationCacheRecord[]) {
+    if (items.length === 0) return;
+    const value = items.map((item) => JSON.stringify(item)).join('\n');
+    await appendFile(this.path(runId, 'processed', 'ai-cache.jsonl'), `${value}\n`, 'utf8');
+  }
+
+  async writeAiClassifications(runId: string, items: ClassificationRecord[]) {
+    const value = items.map((item) => JSON.stringify(item)).join('\n');
+    await writeFile(
+      this.path(runId, 'processed', 'ai-classifications.jsonl'),
+      value ? `${value}\n` : '',
+      'utf8'
+    );
+  }
+
   async writeQualityReport(runId: string, report: unknown) {
     await atomicJsonWrite(this.path(runId, 'processed', 'quality-report.json'), report);
+  }
+
+  async readQualityReport(runId: string) {
+    try {
+      return await readJson<Record<string, unknown>>(this.path(runId, 'processed', 'quality-report.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw error;
+    }
   }
 
   async writeReport(runId: string, markdown: string) {
@@ -238,24 +276,48 @@ export class FileRunStore {
 
   async acquireRunLock(runId: string): Promise<() => Promise<void>> {
     const lockPath = this.path(runId, '.active.lock');
+    const owner = {
+      pid: process.pid,
+      token: randomUUID(),
+      createdAt: new Date().toISOString()
+    };
     try {
       const handle = await open(lockPath, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({pid: process.pid, createdAt: new Date().toISOString()}));
+      await handle.writeFile(JSON.stringify(owner));
       await handle.close();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let active = true;
       try {
-        const owner = await readJson<{pid: number}>(lockPath);
-        process.kill(owner.pid, 0);
-      } catch (ownerError) {
-        active = (ownerError as NodeJS.ErrnoException).code !== 'ESRCH';
+        const lockStat = await stat(lockPath);
+        if (Date.now() - lockStat.mtimeMs <= 120_000) {
+          throw new Error('该调查正在另一个进程中运行。');
+        }
+      } catch (lockError) {
+        if ((lockError as NodeJS.ErrnoException).code !== 'ENOENT') throw lockError;
       }
-      if (active) throw new Error('该调查正在另一个进程中运行。');
       await rm(lockPath, {force: true});
       return this.acquireRunLock(runId);
     }
-    return async () => rm(lockPath, {force: true});
+
+    const heartbeat = setInterval(async () => {
+      try {
+        const current = await readJson<{token?: string}>(lockPath);
+        if (current.token === owner.token) await writeFile(lockPath, JSON.stringify(owner), 'utf8');
+      } catch {
+        // The task will surface its real processing error; a missing lease is handled on the next run.
+      }
+    }, 30_000);
+    heartbeat.unref();
+
+    return async () => {
+      clearInterval(heartbeat);
+      try {
+        const current = await readJson<{token?: string}>(lockPath);
+        if (current.token === owner.token) await rm(lockPath, {force: true});
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    };
   }
 
   async isReportReady(runId: string) {

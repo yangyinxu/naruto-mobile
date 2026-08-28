@@ -153,6 +153,13 @@ export class RuleClassifier {
       actionability,
       confidence: Math.min(0.95, 0.5 + Object.keys(matchedTopics).length * 0.06 + Math.abs(relevance.score - 0.5)),
       classifierVersion: this.version,
+      analysisMode: 'rule_demo',
+      gameRelevant: isValid,
+      insightValue: isValid ? 'strong' : 'none',
+      reportEligible: isValid,
+      reasonCodes: invalidReason ? [invalidReason] : ['rule_demo_match'],
+      evidence: [],
+      needsReview: false,
       matchedTerms: {
         relevance: relevance.terms,
         sourceRelevance: relevance.sourceTerms,

@@ -27,7 +27,11 @@ test('demo run safely pauses, resumes, and generates local artifacts', async () 
     browserChannel: 'chrome',
     browserHeadless: true,
     openBrowser: false,
-    uidSalt: 'test-salt'
+    uidSalt: 'test-salt',
+    aiModel: 'gpt-5.6-luna',
+    aiReasoningEffort: 'medium',
+    aiBatchSize: 10,
+    aiConcurrency: 3
   };
   try {
     const manager = new RunManager(new FileRunStore(directory), config);
@@ -43,6 +47,7 @@ test('demo run safely pauses, resumes, and generates local artifacts', async () 
     await manager.resume(started.id);
     const completed = await waitFor(manager, started.id, (state) => state === 'completed');
     assert.equal(completed.reportReady, true);
+    assert.deepEqual(completed.progress, {phase: 'completed'});
     assert.ok(completed.counts.opinions > 0);
     const [rawContents, rawOpinions] = await Promise.all([
       manager.store.readContents(started.id),
@@ -71,7 +76,11 @@ test('switches the active data directory and blocks changes during collection', 
     browserChannel: 'chrome',
     browserHeadless: true,
     openBrowser: false,
-    uidSalt: 'test-salt'
+    uidSalt: 'test-salt',
+    aiModel: 'gpt-5.6-luna',
+    aiReasoningEffort: 'medium',
+    aiBatchSize: 10,
+    aiConcurrency: 3
   };
   try {
     const manager = new RunManager(new FileRunStore(firstRoot), config);

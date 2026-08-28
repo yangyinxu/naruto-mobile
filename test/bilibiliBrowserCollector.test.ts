@@ -13,7 +13,11 @@ const config: AppConfig = {
   browserChannel: 'chrome',
   browserHeadless: false,
   openBrowser: false,
-  uidSalt: 'test-salt'
+  uidSalt: 'test-salt',
+  aiModel: 'gpt-5.6-luna',
+  aiReasoningEffort: 'medium',
+  aiBatchSize: 10,
+  aiConcurrency: 3
 };
 
 test('initializes and closes the worker page pool without a temporal dead zone error', async () => {

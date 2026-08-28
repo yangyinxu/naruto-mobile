@@ -14,6 +14,34 @@ export type RunState = typeof runStates[number];
 export type ResearchMode = 'live' | 'demo';
 export type ContentType = 'video' | 'dynamic';
 export type StopReason = 'budget_exhausted' | 'source_exhausted' | 'user_finalized';
+export type AnalysisMode = 'ai' | 'rule_demo';
+export type InsightValue = 'strong' | 'weak' | 'none';
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type RunProgressPhase = 'preparing' | 'discovering' | 'collecting' | 'analyzing' | 'reporting' | 'completed';
+
+export interface RunProgress {
+  phase: RunProgressPhase;
+  completed?: number;
+  total?: number;
+}
+
+export interface AiTokenUsage {
+  requestCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number;
+  pricing?: {
+    currency: 'USD';
+    inputPerMillion: number;
+    cachedInputPerMillion: number;
+    outputPerMillion: number;
+    checkedAt: string;
+    sourceUrl: string;
+  };
+}
 
 export interface ResearchRequest {
   name: string;
@@ -46,10 +74,25 @@ export interface RunManifest {
   updatedAt: string;
   activeElapsedMs: number;
   statusMessage: string;
+  progress?: RunProgress;
   counts: RunCounts;
   stopReason?: StopReason;
   error?: string;
   reportReady: boolean;
+  analysis?: {
+    mode: AnalysisMode;
+    classifierVersion: string;
+    model?: string;
+    completedAt: string;
+    strongOpinions: number;
+    weakOpinions: number;
+    noiseOpinions: number;
+    localHardNoise?: number;
+    creatorViewsExcluded?: number;
+    fastTriageSkipped?: number;
+    detailedAiOpinions?: number;
+    usage?: AiTokenUsage;
+  };
 }
 
 export interface CandidateContent {
@@ -131,6 +174,26 @@ export interface ClassificationRecord {
   confidence: number;
   classifierVersion: string;
   matchedTerms: Record<string, string[]>;
+  /** Added by schema v3 processors. Older derived records omit these fields. */
+  analysisMode?: AnalysisMode;
+  gameRelevant?: boolean;
+  insightValue?: InsightValue;
+  informationType?: 'product_feedback' | 'gameplay_advice' | 'factual_info' | 'community_chatter' | 'lore_discussion' | 'content_request';
+  claimObject?: string;
+  claim?: string;
+  specificitySignals?: Array<'cause' | 'mechanism' | 'impact' | 'comparison' | 'suggestion' | 'behavior_with_reason'>;
+  reportEligible?: boolean;
+  reasonCodes?: string[];
+  evidence?: Array<{topic: string; quote: string}>;
+  needsReview?: boolean;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
+export interface AiClassificationCacheRecord {
+  opinionId: string;
+  inputHash: string;
+  classification: ClassificationRecord;
 }
 
 export interface RunCheckpoint {

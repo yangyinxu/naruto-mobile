@@ -27,6 +27,7 @@ const activeStates = new Set<RunState>(['discovering', 'collecting', 'pause_requ
 /** Coordinates one local collector per run and preserves cooperative pause semantics. */
 export class RunManager {
   private readonly active = new Map<string, ActiveRun>();
+  private readonly backgroundProcessing = new Set<string>();
   private readonly events = new EventEmitter();
   private currentStore: FileRunStore;
 
@@ -52,7 +53,8 @@ export class RunManager {
         ...current,
         state: 'paused',
         activeElapsedMs: Math.max(current.activeElapsedMs, checkpoint?.activeElapsedMs ?? 0),
-        statusMessage: '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。'
+        statusMessage: '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。',
+        progress: {phase: 'collecting'}
       }));
       await this.recordEvent(item.id, 'warning', 'run_recovered', '检测到未完成调查，已安全恢复为暂停状态。');
     }));
@@ -62,7 +64,7 @@ export class RunManager {
     const nextStore = new FileRunStore(dataRoot);
     if (nextStore.root === this.store.root) return this.store.root;
     const manifests = await this.store.listManifests();
-    if (this.active.size > 0 || manifests.some((item) => activeStates.has(item.state))) {
+    if (this.active.size > 0 || this.backgroundProcessing.size > 0 || manifests.some((item) => activeStates.has(item.state))) {
       const error = new Error('调查正在采集或生成报告，请等待完成或暂停后再更改存放位置。') as Error & {statusCode: number};
       error.statusCode = 409;
       throw error;
@@ -186,22 +188,81 @@ export class RunManager {
     return this.get(runId);
   }
 
-  private async processAndComplete(runId: string, early: boolean) {
+  async reanalyze(runId: string) {
+    if (this.active.has(runId) || this.backgroundProcessing.has(runId)) {
+      throw new Error('该调查正在运行，请等待当前步骤完成。');
+    }
+    const manifest = await this.get(runId);
+    if (manifest.request.mode === 'demo') throw new Error('演示调查继续使用本地规则，不调用 AI。');
+    if (!this.config.openAiApiKey) throw new Error('重新分析需要先配置 OPENAI_API_KEY。');
+    this.backgroundProcessing.add(runId);
+    const processing = await this.update(runId, (current) => ({
+      ...current,
+      state: 'processing',
+      reportReady: false,
+      error: undefined,
+      statusMessage: `正在使用 ${this.config.aiModel} 重新筛选全部意见…`,
+      progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
+    }));
+    await this.recordEvent(runId, 'info', 'ai_reanalysis_started', '用户请求使用 Luna 重新分析已有原始数据。');
+    void this.processAndComplete(runId, manifest.stopReason === 'user_finalized', false)
+      .finally(() => this.backgroundProcessing.delete(runId));
+    return processing;
+  }
+
+  private async processAndComplete(runId: string, early: boolean, markProcessing = true) {
     const release = await this.store.acquireRunLock(runId);
     try {
-      let manifest = await this.update(runId, (current) => ({
-        ...current,
-        state: 'processing',
-        stopReason: early ? 'user_finalized' : current.stopReason,
-        statusMessage: '正在清洗、分类并生成报告…',
-        error: undefined
-      }));
-      const result = await processRun(this.store, manifest);
+      let manifest = markProcessing
+        ? await this.update(runId, (current) => ({
+          ...current,
+          state: 'processing',
+          stopReason: early ? 'user_finalized' : current.stopReason,
+          statusMessage: current.request.mode === 'demo'
+            ? '正在使用本地演示规则生成报告…'
+            : `正在使用 ${this.config.aiModel} 筛选全部意见…`,
+          progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions},
+          error: undefined
+        }))
+        : await this.get(runId);
+      const result = await processRun(this.store, manifest, this.config, {
+        onAiProgress: async ({completed, total, cached}) => {
+          await this.update(runId, (current) => ({
+            ...current,
+            statusMessage: `Luna 正在分析意见：${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
+            progress: {phase: 'analyzing', completed, total}
+          }));
+        },
+        onReporting: async () => {
+          await this.update(runId, (current) => ({
+            ...current,
+            statusMessage: current.request.mode === 'demo'
+              ? '本地规则分析完成，正在生成报告…'
+              : 'Luna 已完成意见分析，正在生成报告…',
+            progress: {phase: 'reporting'}
+          }));
+        }
+      });
       manifest = await this.update(runId, (current) => ({
         ...current,
         state: early ? 'completed_early' : 'completed',
         statusMessage: early ? '已根据当前样本提前生成报告。' : '调查和报告已经完成。',
+        progress: {phase: 'completed'},
         reportReady: true,
+        analysis: {
+          mode: result.analysisMode,
+          classifierVersion: result.classifierVersion,
+          model: result.model,
+          completedAt: new Date().toISOString(),
+          strongOpinions: result.strongOpinions,
+          weakOpinions: result.weakOpinions,
+          noiseOpinions: result.noiseOpinions,
+          localHardNoise: result.localHardNoise,
+          creatorViewsExcluded: result.creatorViewsExcluded,
+          fastTriageSkipped: result.fastTriageSkipped,
+          detailedAiOpinions: result.detailedAiOpinions,
+          usage: result.aiUsage
+        },
         counts: {
           ...current.counts,
           contents: result.rawContentCount,
@@ -210,7 +271,12 @@ export class RunManager {
           validOpinions: result.validOpinions
         }
       }));
-      await this.recordEvent(runId, 'info', 'report_completed', '本地调查报告已生成。');
+      await this.recordEvent(
+        runId,
+        'info',
+        'report_completed',
+        result.analysisMode === 'ai' ? 'Luna AI 调查报告已生成。' : '本地演示报告已生成。'
+      );
       this.emit(manifest);
     } catch (error) {
       await this.fail(runId, error);
@@ -256,7 +322,13 @@ export class RunManager {
         getDirective: directive,
         remainingMs: remaining,
         onState: async (state, message) => {
-          await this.update(runId, (current) => ({...current, state, statusMessage: message, error: undefined}));
+          await this.update(runId, (current) => ({
+            ...current,
+            state,
+            statusMessage: message,
+            progress: state === 'discovering' || state === 'collecting' ? {phase: state} : current.progress,
+            error: undefined
+          }));
           await this.recordEvent(runId, 'info', `state_${state}`, message);
         },
         onCandidates: async (candidates) => {
@@ -322,14 +394,49 @@ export class RunManager {
       state: 'processing',
       activeElapsedMs: result.checkpoint.activeElapsedMs,
       stopReason,
-      statusMessage: '采集结束，正在清洗、分类并生成报告…'
+      statusMessage: current.request.mode === 'demo'
+        ? '采集结束，正在使用本地演示规则生成报告…'
+        : `采集结束，正在使用 ${this.config.aiModel} 筛选全部意见…`,
+      progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
     }));
-    const processed = await processRun(this.store, processingManifest);
+    const processed = await processRun(this.store, processingManifest, this.config, {
+      onAiProgress: async ({completed, total, cached}) => {
+        await this.update(runId, (current) => ({
+          ...current,
+          statusMessage: `Luna 正在分析意见：${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
+          progress: {phase: 'analyzing', completed, total}
+        }));
+      },
+      onReporting: async () => {
+        await this.update(runId, (current) => ({
+          ...current,
+          statusMessage: current.request.mode === 'demo'
+            ? '本地规则分析完成，正在生成报告…'
+            : 'Luna 已完成意见分析，正在生成报告…',
+          progress: {phase: 'reporting'}
+        }));
+      }
+    });
     processingManifest = await this.update(runId, (current) => ({
       ...current,
       state: early ? 'completed_early' : 'completed',
       reportReady: true,
+      analysis: {
+        mode: processed.analysisMode,
+        classifierVersion: processed.classifierVersion,
+        model: processed.model,
+        completedAt: new Date().toISOString(),
+        strongOpinions: processed.strongOpinions,
+        weakOpinions: processed.weakOpinions,
+        noiseOpinions: processed.noiseOpinions,
+        localHardNoise: processed.localHardNoise,
+        creatorViewsExcluded: processed.creatorViewsExcluded,
+        fastTriageSkipped: processed.fastTriageSkipped,
+        detailedAiOpinions: processed.detailedAiOpinions,
+        usage: processed.aiUsage
+      },
       statusMessage: early ? '已根据当前样本提前生成报告。' : '调查和报告已经完成。',
+      progress: {phase: 'completed'},
       counts: {
         ...current.counts,
         contents: processed.rawContentCount,
@@ -338,7 +445,12 @@ export class RunManager {
         validOpinions: processed.validOpinions
       }
     }));
-    await this.recordEvent(runId, 'info', 'report_completed', '本地调查报告已生成。');
+    await this.recordEvent(
+      runId,
+      'info',
+      'report_completed',
+      processed.analysisMode === 'ai' ? 'Luna AI 调查报告已生成。' : '本地演示报告已生成。'
+    );
     this.emit(processingManifest);
   }
 

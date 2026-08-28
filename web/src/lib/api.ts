@@ -1,6 +1,7 @@
 import {
   AppSettings,
   ChromeConnectionStatus,
+  ReportData,
   ResearchRequest,
   RunEvent,
   RunManifest,
@@ -48,6 +49,9 @@ export const api = {
   finalize: async (id: string) => (
     await request<{run: RunManifest}>(`/api/runs/${id}/finalize`, {method: 'POST'})
   ).run,
+  reanalyze: async (id: string) => (
+    await request<{run: RunManifest}>(`/api/runs/${id}/reanalyze`, {method: 'POST'})
+  ).run,
   extend: async (id: string, minutes: number) => (
     await request<{run: RunManifest}>(`/api/runs/${id}/extend`, {
       method: 'POST', body: JSON.stringify({minutes})
@@ -71,5 +75,8 @@ export const api = {
       throw new Error(value.message || '报告暂时无法读取。');
     }
     return response.text();
-  }
+  },
+  reportData: async (id: string) => (
+    await request<{report: ReportData}>(`/api/runs/${id}/report-data`)
+  ).report
 };

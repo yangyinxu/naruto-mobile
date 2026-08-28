@@ -32,7 +32,11 @@ test('browses complete opinion and content records with search and pagination', 
     browserChannel: 'chrome',
     browserHeadless: true,
     openBrowser: false,
-    uidSalt: 'test-salt'
+    uidSalt: 'test-salt',
+    aiModel: 'gpt-5.6-luna',
+    aiReasoningEffort: 'medium',
+    aiBatchSize: 10,
+    aiConcurrency: 3
   };
   const manager = new RunManager(new FileRunStore(directory), config);
   await manager.initialize();

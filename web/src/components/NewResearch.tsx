@@ -73,17 +73,17 @@ export const NewResearch = ({
   return (
     <main className="new-research page-grid">
       <section className="hero-copy">
-        <div className="eyebrow"><Sparkles size={15}/> 本地 · 私密 · 可随时暂停</div>
+        <div className="eyebrow"><Sparkles size={15}/> 原始数据本地保存 · Luna AI 筛选</div>
         <h1>把社区声音，整理成<br/><em>可行动的产品情报</em></h1>
-        <p>无需数据库或云端账号。选择调查时间，工具会优先查看热门内容，自动保存进度并生成报告。</p>
+        <p>真实调查会完整保存公开意见，再由 Luna 筛选强洞察；演示模式继续使用本地规则。</p>
         <div className="privacy-note">
           <Check size={18}/>
           <div className="privacy-note-content">
-            <span>数据只写入你的电脑：<strong>{settings.dataRoot}</strong></span>
+            <span>原始采集数据写入你的电脑：<strong>{settings.dataRoot}</strong></span>
             <button className="data-location-button" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
               <FolderOpen size={16}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
             </button>
-            <small>更改位置不会移动原文件；历史调查会随当前所选目录切换。</small>
+            <small>真实模式会把不含用户名、UID和主页的评论语境发送给 OpenAI；更改位置不会移动原文件。</small>
           </div>
         </div>
       </section>
@@ -129,8 +129,8 @@ export const NewResearch = ({
           <small>选择调查运行模式</small>
         </div>
         <div className="advanced-panel">
-          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查</strong><small>打开浏览器读取 B站公开页面</small></span></label>
-          <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>演示模式</strong><small>使用虚构样本体验完整流程</small></span></label>
+          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : '需要配置 OpenAI API 密钥'}</small></span></label>
+          <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span></label>
         </div>
         <label className={`parallel-windows ${mode === 'demo' ? 'disabled' : ''}`}>
           <span className="parallel-windows-icon"><Gauge size={20}/></span>
@@ -184,10 +184,10 @@ export const NewResearch = ({
           <p>工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。</p>
         </section>
 
-        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || (!includeVideos && !includeDynamics) || (mode === 'live' && !chromeReady)}>
-          {busy ? '正在创建调查…' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
+        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
+          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? '配置 AI 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
         </button>
-        <p className="compliance-copy">只读取公开可见页面，不绕过登录、验证码或平台限制。</p>
+        <p className="compliance-copy">只读取公开可见页面；真实模式仅向 AI 发送去标识化的评论分析语境。</p>
       </form>
     </main>
   );

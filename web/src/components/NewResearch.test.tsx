@@ -6,6 +6,13 @@ import {NewResearch} from './NewResearch';
 const settings = {
   apiVersion: 5,
   dataRoot: 'D:/Research/naruto-mobile',
+  analysis: {
+    aiConfigured: true,
+    model: 'gpt-5.6-luna',
+    reasoningEffort: 'medium',
+    liveMode: 'ai' as const,
+    demoMode: 'rule_demo' as const
+  },
   defaults: {
     durationMinutes: 5,
     contentWindowDays: 30,
@@ -39,7 +46,7 @@ describe('NewResearch', () => {
   it('starts with the beginner five-minute preset and submits canonical settings', async () => {
     const onStart = vi.fn().mockResolvedValue(undefined);
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
-    expect(screen.getByText('无需数据库或云端账号。', {exact: false})).toBeInTheDocument();
+    expect(screen.getByText(/Luna 筛选强洞察/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
     expect(onStart).toHaveBeenCalledWith(expect.objectContaining({
       durationMinutes: 5,
@@ -59,8 +66,8 @@ describe('NewResearch', () => {
   it('shows advanced mode options without requiring expansion', () => {
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
     expect(screen.getByText('高级选项')).toBeVisible();
-    expect(screen.getByText('真实调查')).toBeVisible();
-    expect(screen.getByText('演示模式')).toBeVisible();
+    expect(screen.getByText(/真实调查 · Luna AI/)).toBeVisible();
+    expect(screen.getByText('本地演示')).toBeVisible();
     expect(screen.getByLabelText('并行调查标签页数')).toBeVisible();
   });
 
@@ -102,7 +109,7 @@ describe('NewResearch', () => {
     };
     render(<NewResearch {...chromeProps()} chromeStatus={disconnectedStatus} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
     expect(screen.getByRole('button', {name: /连接 Chrome 后开始/})).toBeDisabled();
-    fireEvent.click(screen.getByText('演示模式'));
+    fireEvent.click(screen.getByText('本地演示'));
     expect(screen.getByRole('button', {name: /^开始调查/})).toBeEnabled();
   });
 
