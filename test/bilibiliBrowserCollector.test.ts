@@ -23,7 +23,11 @@ const config: AppConfig = {
 test('initializes and closes the worker page pool without a temporal dead zone error', async () => {
   let released = false;
   let closed = false;
+  let initScript = '';
   const page = {
+    addInitScript: async (script: {content?: string}) => {
+      initScript = script.content ?? '';
+    },
     setDefaultTimeout: () => undefined,
     close: async () => {
       closed = true;
@@ -91,6 +95,8 @@ test('initializes and closes the worker page pool without a temporal dead zone e
   const result = await new BilibiliBrowserCollector(config, chromeConnection).collect(context);
 
   assert.equal(result.outcome, 'paused');
+  assert.match(initScript, /HTMLVideoElement/);
+  assert.match(initScript, /volumechange/);
   assert.equal(closed, true);
   assert.equal(released, true);
 });

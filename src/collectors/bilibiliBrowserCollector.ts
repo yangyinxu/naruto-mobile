@@ -80,6 +80,39 @@ interface CollectedComment {
   isReply: boolean;
 }
 
+const muteVideosOnPage = (page: Page) => page.addInitScript({
+  content: `(() => {
+    const muteVideo = (target) => {
+      if (!(target instanceof HTMLVideoElement)) return;
+      target.defaultMuted = true;
+      if (!target.muted) target.muted = true;
+    };
+    const muteVideosIn = (root) => {
+      if (root instanceof HTMLVideoElement) muteVideo(root);
+      root.querySelectorAll?.('video').forEach(muteVideo);
+    };
+    const watchForVideos = () => {
+      muteVideosIn(document);
+      const root = document.documentElement;
+      if (!root) return;
+      new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          mutation.addedNodes.forEach((node) => {
+            if (node instanceof Element) muteVideosIn(node);
+          });
+        });
+      }).observe(root, {childList: true, subtree: true});
+    };
+    document.addEventListener('play', (event) => muteVideo(event.target), true);
+    document.addEventListener('volumechange', (event) => muteVideo(event.target), true);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', watchForVideos, {once: true});
+    } else {
+      watchForVideos();
+    }
+  })();`
+});
+
 const publicProfileUrl = (uid?: string, href?: string) => {
   if (href) {
     try {
@@ -485,6 +518,7 @@ export class BilibiliBrowserCollector implements Collector {
       const createWorkerPage = async () => {
         const page = await lease.context.newPage();
         openedPages.push(page);
+        await muteVideosOnPage(page);
         page.setDefaultTimeout(6_000);
         return page;
       };
