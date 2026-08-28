@@ -19,7 +19,8 @@
     "start": "tsx src/server.ts",
     "test": "npm run test:server && npm run test:web",
     "test:server": "tsx --test test/**/*.test.ts",
-    "test:web": "npm run test --workspace @naruto-mobile/web"
+    "test:web": "npm run test --workspace @naruto-mobile/web",
+    "eval:ai": "tsx src/tools/evaluateAiClassifier.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
