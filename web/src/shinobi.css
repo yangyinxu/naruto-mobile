@@ -1,0 +1,1485 @@
+.topbar-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skin-picker {
+  min-height: 36px;
+  padding: 6px 9px;
+  border: 1px solid #d8d1c4;
+  border-radius: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #625c52;
+  background: #faf7f0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.skin-picker svg {
+  width: 15px;
+  height: 15px;
+}
+
+.skin-picker select {
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font-weight: 750;
+}
+
+.shinobi-mission-score {
+  display: none;
+}
+
+.skin-shinobi {
+  --shinobi-ground: #010814;
+  --shinobi-paper: #d5d0ce;
+  --shinobi-paper-deep: #c8c2bf;
+  --shinobi-ink: #171718;
+  --shinobi-muted: #504a46;
+  --muted: var(--shinobi-muted);
+  --shinobi-rule: rgba(23, 23, 24, .24);
+  --shinobi-silver: #8f8984;
+  --shinobi-seal: #a0382c;
+  --shinobi-seal-dark: #76271f;
+  --shinobi-bone: #ece7df;
+  min-height: 100vh;
+  padding-left: 188px;
+  color: var(--shinobi-ink);
+  background-color: var(--shinobi-ground);
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 720px 720px;
+  font-family: "Microsoft YaHei UI", "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+  color-scheme: dark;
+}
+
+html[data-skin="shinobi"] body {
+  background: var(--shinobi-ground, #010814);
+}
+
+.skin-shinobi ::selection {
+  color: #fffaf2;
+  background: #8f2d24;
+}
+
+.skin-shinobi * {
+  scrollbar-color: #8f2d24 #080e18;
+  scrollbar-width: thin;
+}
+
+.skin-shinobi *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.skin-shinobi *::-webkit-scrollbar-track {
+  background: #080e18;
+}
+
+.skin-shinobi *::-webkit-scrollbar-thumb {
+  border: 2px solid #080e18;
+  background: #8f2d24;
+}
+
+.skin-shinobi :focus-visible {
+  outline: 3px solid #b53e31;
+  outline-offset: 3px;
+}
+
+.skin-shinobi .topbar {
+  width: 188px;
+  height: 100vh;
+  padding: 28px 18px 20px;
+  border: 0;
+  border-right: 1px solid rgba(217, 211, 205, .22);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 28px;
+  color: var(--shinobi-bone);
+  background-color: #02050a;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 520px 520px;
+  box-shadow: 10px 0 32px rgba(0, 0, 0, .28);
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 30;
+}
+
+.skin-shinobi .brand {
+  color: var(--shinobi-bone);
+}
+
+.skin-shinobi .brand > span {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(213, 208, 206, .34);
+  border-radius: 0;
+  color: #ede5dc;
+  background-color: #15161a;
+  background-image: url('./assets/shinobi-seal.png');
+  background-size: 180px 180px;
+  background-blend-mode: multiply;
+  box-shadow: 4px 5px 16px rgba(0, 0, 0, .32);
+}
+
+.skin-shinobi .brand strong {
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-size: 18px;
+  letter-spacing: .12em;
+}
+
+.skin-shinobi .brand small {
+  margin-top: 7px;
+  color: #a9a29a;
+  letter-spacing: .07em;
+}
+
+.skin-shinobi .topbar nav {
+  width: 100%;
+  align-self: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.skin-shinobi .topbar nav button,
+.skin-shinobi .topbar nav .guide-nav {
+  width: 100%;
+  min-height: 52px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  justify-content: flex-start;
+  color: #aaa49d;
+  background: transparent;
+  font-size: 14px;
+}
+
+.skin-shinobi .topbar nav button:hover {
+  color: #f1ece5;
+  background: rgba(213, 208, 206, .07);
+}
+
+.skin-shinobi .topbar nav button.active,
+.skin-shinobi .topbar nav .guide-nav.active {
+  color: #f4eee6;
+  background: rgba(160, 56, 44, .18);
+  font-weight: 800;
+}
+
+.skin-shinobi .topbar nav button.active::after,
+.skin-shinobi .topbar nav .guide-nav.active::after {
+  width: 3px;
+  height: 30px;
+  border-radius: 0;
+  inset: 11px auto auto 0;
+  background: #aa382d;
+}
+
+.skin-shinobi .guide-nav-badge {
+  margin-left: auto;
+  padding: 2px 5px;
+  border-radius: 0;
+  color: #ece6de;
+  background: #7b2a23;
+  font-size: 10px;
+}
+
+.skin-shinobi .topbar nav i {
+  margin-left: auto;
+  color: #e6dfd6;
+  background: rgba(160, 56, 44, .38);
+}
+
+.skin-shinobi .topbar-tools {
+  width: 100%;
+  margin: auto 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.skin-shinobi .skin-picker,
+.skin-shinobi .local-pill {
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(213, 208, 206, .24);
+  border-radius: 0;
+  color: #d7d0c8;
+  background: rgba(0, 0, 0, .22);
+  font-size: 12px;
+}
+
+.skin-shinobi .skin-picker select {
+  margin-left: auto;
+  color: #f1ebe3;
+  background: #080d16;
+}
+
+.skin-shinobi .local-pill span {
+  background: #6eaa84;
+  box-shadow: none;
+}
+
+.skin-shinobi .content-width,
+.skin-shinobi .page-grid {
+  width: min(1180px, calc(100% - 52px));
+}
+
+.skin-shinobi .page-grid {
+  padding: 38px 0 88px;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.skin-shinobi .hero-copy {
+  padding: 25px 30px;
+  border: 1px solid rgba(213, 208, 206, .22);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, .72fr);
+  align-items: end;
+  gap: 22px 34px;
+  color: var(--shinobi-bone);
+  background-color: rgba(0, 0, 0, .38);
+  position: relative;
+  top: auto;
+}
+
+.skin-shinobi .hero-copy .eyebrow {
+  display: none;
+}
+
+.skin-shinobi .hero-copy h1 {
+  grid-column: 1;
+  margin: 0;
+  color: #eee8e0;
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-size: clamp(30px, 3.3vw, 45px);
+  line-height: 1.22;
+  letter-spacing: -.025em;
+}
+
+.skin-shinobi .hero-copy h1 em {
+  color: #c2483b;
+}
+
+.skin-shinobi .hero-copy > p {
+  grid-column: 1;
+  margin: -9px 0 0;
+  max-width: 60ch;
+  color: #bcb5ad;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.skin-shinobi .privacy-note {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  margin: 0;
+  padding: 16px 17px;
+  border: 1px solid rgba(213, 208, 206, .2);
+  border-radius: 0;
+  color: #d8d1c9;
+  background: rgba(1, 8, 20, .58);
+  font-size: 13px;
+}
+
+.skin-shinobi .privacy-note svg {
+  color: #a8c2b0;
+}
+
+.skin-shinobi .privacy-note strong,
+.skin-shinobi .privacy-note-content > small {
+  color: #a8a098;
+}
+
+.skin-shinobi .data-location-button {
+  border-radius: 0;
+  border-color: rgba(213, 208, 206, .32);
+  color: #e8e1d9;
+  background: #121823;
+}
+
+.skin-shinobi .setup-card,
+.skin-shinobi .guide-page,
+.skin-shinobi .history-page,
+.skin-shinobi .run-page,
+.skin-shinobi .records-page,
+.skin-shinobi .markdown-report {
+  color: var(--shinobi-ink);
+  background-color: var(--shinobi-paper);
+  background-image: url('./assets/shinobi-paper.png');
+  background-size: 620px 620px;
+  border: 1px solid rgba(218, 214, 211, .46);
+  border-radius: 0;
+  box-shadow: 12px 18px 44px rgba(0, 0, 0, .28);
+}
+
+.skin-shinobi .setup-card {
+  padding: 36px 42px 42px;
+  position: relative;
+}
+
+.skin-shinobi .shinobi-mission-score {
+  margin: -36px -42px 34px;
+  padding: 0;
+  border-bottom: 1px solid rgba(23, 23, 24, .42);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  list-style: none;
+  background: rgba(237, 233, 229, .42);
+}
+
+.skin-shinobi .shinobi-mission-score li {
+  min-width: 0;
+  padding: 17px 15px;
+  border-right: 1px solid rgba(23, 23, 24, .2);
+  display: grid;
+  grid-template-columns: 31px minmax(0, 1fr);
+  gap: 2px 9px;
+  align-items: center;
+  color: #504a46;
+}
+
+.skin-shinobi .shinobi-mission-score li:last-child {
+  border-right: 0;
+}
+
+.skin-shinobi .shinobi-mission-score li span {
+  width: 28px;
+  height: 28px;
+  grid-row: 1 / 3;
+  border: 1px solid #77706b;
+  display: grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 850;
+}
+
+.skin-shinobi .shinobi-mission-score li strong {
+  font-size: 13px;
+}
+
+.skin-shinobi .shinobi-mission-score li small {
+  font-size: 11px;
+}
+
+.skin-shinobi .shinobi-mission-score .complete,
+.skin-shinobi .shinobi-mission-score .current {
+  color: #171718;
+}
+
+.skin-shinobi .shinobi-mission-score .complete span {
+  color: #ece7df;
+  background: #171718;
+}
+
+.skin-shinobi .shinobi-mission-score .current {
+  background: rgba(160, 56, 44, .11);
+}
+
+.skin-shinobi .shinobi-mission-score .current span {
+  border-color: #8c3027;
+  color: #fffaf2;
+  background: #8c3027;
+}
+
+@media (min-width: 1280px) {
+  .skin-shinobi .setup-card {
+    padding-right: 330px;
+    overflow: hidden;
+  }
+
+  .skin-shinobi .shinobi-mission-score {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 286px;
+    margin: 0;
+    padding: 38px 28px;
+    border: 0;
+    border-left: 1px solid rgba(213, 208, 206, .28);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    color: #d9d2ca;
+    background-color: #080e18;
+    background-image: url("./assets/shinobi-ink.png");
+    background-size: 720px 720px;
+    background-blend-mode: soft-light;
+  }
+
+  .skin-shinobi .shinobi-mission-score::before {
+    content: "本次调查密卷";
+    margin: 0 0 26px;
+    padding: 0 0 18px;
+    border-bottom: 1px solid rgba(213, 208, 206, .28);
+    color: #f0e9e0;
+    font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: .12em;
+  }
+
+  .skin-shinobi .shinobi-mission-score::after {
+    content: "任务秘报 · 仅存本机";
+    margin-top: auto;
+    padding: 16px 14px;
+    border: 1px solid rgba(160, 56, 44, .7);
+    color: #e4d9cf;
+    background: rgba(160, 56, 44, .13);
+    font-size: 11px;
+    line-height: 1.6;
+    letter-spacing: .08em;
+    text-align: center;
+  }
+
+  .skin-shinobi .shinobi-mission-score li {
+    position: relative;
+    min-height: 88px;
+    padding: 15px 0 16px;
+    border: 0;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 4px 12px;
+    color: #a9a29a;
+    background: transparent;
+  }
+
+  .skin-shinobi .shinobi-mission-score li:not(:last-of-type)::after {
+    content: "";
+    position: absolute;
+    top: 48px;
+    bottom: -3px;
+    left: 15px;
+    border-left: 1px solid rgba(213, 208, 206, .28);
+  }
+
+  .skin-shinobi .shinobi-mission-score li span {
+    width: 31px;
+    height: 31px;
+    border-color: rgba(213, 208, 206, .5);
+    color: #e7dfd5;
+    background: #0c111a;
+  }
+
+  .skin-shinobi .shinobi-mission-score li strong {
+    color: #eee6dc;
+    font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+    font-size: 15px;
+    letter-spacing: .04em;
+  }
+
+  .skin-shinobi .shinobi-mission-score li small {
+    color: #aaa39b;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .skin-shinobi .shinobi-mission-score .complete,
+  .skin-shinobi .shinobi-mission-score .current {
+    color: #f0e8df;
+    background: transparent;
+  }
+
+  .skin-shinobi .shinobi-mission-score .current strong,
+  .skin-shinobi .shinobi-mission-score .current small {
+    color: #df8a7c;
+  }
+}
+
+.skin-shinobi .step-heading {
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.skin-shinobi .step-heading > span {
+  width: 30px;
+  height: 30px;
+  border-radius: 0;
+  color: #f0ebe4;
+  background: #171718;
+}
+
+.skin-shinobi .step-heading h2 {
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-size: 22px;
+  letter-spacing: .05em;
+}
+
+.skin-shinobi .step-heading p,
+.skin-shinobi .field-label small,
+.skin-shinobi .advanced-heading small,
+.skin-shinobi .custom-duration small,
+.skin-shinobi .mode-card small,
+.skin-shinobi .parallel-windows-copy small,
+.skin-shinobi .chrome-connect-heading small,
+.skin-shinobi .compliance-copy {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .form-divider {
+  height: 1px;
+  margin: 30px 0;
+  background: rgba(23, 23, 24, .24);
+}
+
+.skin-shinobi .preset-grid,
+.skin-shinobi .advanced-panel {
+  gap: 0;
+  border: 1px solid rgba(23, 23, 24, .42);
+}
+
+.skin-shinobi .preset,
+.skin-shinobi .mode-card {
+  min-height: 104px;
+  border: 0;
+  border-right: 1px solid rgba(23, 23, 24, .26);
+  border-radius: 0;
+  color: #242223;
+  background: rgba(255, 255, 255, .16);
+  box-shadow: none;
+}
+
+.skin-shinobi .preset:last-child,
+.skin-shinobi .mode-card:last-child {
+  border-right: 0;
+}
+
+.skin-shinobi .preset:hover,
+.skin-shinobi .mode-card:hover {
+  transform: none;
+  color: #080808;
+  background: rgba(255, 255, 255, .32);
+}
+
+.skin-shinobi .preset.selected,
+.skin-shinobi .mode-card.selected {
+  color: #f4efe8;
+  background: #171718;
+  box-shadow: inset 0 -4px 0 #9e352a;
+}
+
+.skin-shinobi .preset.selected svg,
+.skin-shinobi .mode-card.selected svg {
+  color: #c44a3c;
+}
+
+.skin-shinobi .preset small,
+.skin-shinobi .mode-card.selected small {
+  color: inherit;
+  opacity: .72;
+}
+
+.skin-shinobi .custom-duration,
+.skin-shinobi .input-with-icon,
+.skin-shinobi .check-option,
+.skin-shinobi .select-option,
+.skin-shinobi .parallel-windows,
+.skin-shinobi .stop-rule-note,
+.skin-shinobi .chrome-connect-card,
+.skin-shinobi .record-fields > div,
+.skin-shinobi .manual-address,
+.skin-shinobi .chrome-switch-example {
+  border-radius: 0;
+  border-color: rgba(23, 23, 24, .34);
+  color: #242223;
+  background: rgba(255, 255, 255, .18);
+  box-shadow: none;
+}
+
+.skin-shinobi .input-with-icon:focus-within,
+.skin-shinobi input:focus,
+.skin-shinobi textarea:focus,
+.skin-shinobi select:focus {
+  border-color: #8e3027;
+  box-shadow: 0 0 0 3px rgba(142, 48, 39, .16);
+}
+
+.skin-shinobi input,
+.skin-shinobi textarea,
+.skin-shinobi select {
+  color: #171718;
+}
+
+.skin-shinobi .custom-duration input,
+.skin-shinobi .parallel-windows select,
+.skin-shinobi .source-limit-input input,
+.skin-shinobi .address-row input,
+.skin-shinobi .record-search input {
+  border-radius: 0;
+  border-color: rgba(23, 23, 24, .34);
+  color: #171718;
+  background: rgba(245, 242, 239, .62);
+}
+
+.skin-shinobi .check-option input {
+  accent-color: #8f3027;
+}
+
+.skin-shinobi .select-option select,
+.skin-shinobi .parallel-windows select,
+.skin-shinobi .source-limit-input input {
+  color: #7e2b23;
+}
+
+.skin-shinobi .parallel-windows-icon,
+.skin-shinobi .chrome-connect-heading > span,
+.skin-shinobi .run-icon {
+  border: 1px solid rgba(23, 23, 24, .28);
+  border-radius: 0;
+  color: #8b2f26;
+  background: rgba(255, 255, 255, .22);
+}
+
+.skin-shinobi .stop-rule-note {
+  color: #5f302b;
+  background: rgba(160, 56, 44, .09);
+}
+
+.skin-shinobi .chrome-connect-card,
+.skin-shinobi .chrome-connect-prominent,
+.skin-shinobi .chrome-connect-prominent.chrome-connected {
+  border: 1px solid rgba(23, 23, 24, .5);
+  color: #e9e3db;
+  background-color: #090d14;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 460px 460px;
+}
+
+.skin-shinobi .chrome-connect-card .chrome-connect-status {
+  border-radius: 0;
+  color: #b8d0c0;
+  background: rgba(67, 111, 83, .18);
+}
+
+.skin-shinobi .chrome-connect-card .chrome-connect-status.warning {
+  color: #ecc3bc;
+  background: rgba(160, 56, 44, .2);
+}
+
+.skin-shinobi .chrome-connect-card > p,
+.skin-shinobi .chrome-connect-heading small {
+  color: #aaa39b;
+}
+
+.skin-shinobi .chrome-settings-button,
+.skin-shinobi .chrome-guide-link,
+.skin-shinobi .secondary-action,
+.skin-shinobi .danger-action,
+.skin-shinobi .data-location-button,
+.skin-shinobi .guide-disconnect-button,
+.skin-shinobi .records-pagination button,
+.skin-shinobi .record-links a,
+.skin-shinobi .run-record-actions button {
+  border-radius: 0;
+  border-color: rgba(213, 208, 206, .3);
+  color: #e8e2da;
+  background: #111722;
+}
+
+.skin-shinobi .setup-card .primary-action,
+.skin-shinobi .guide-primary-button,
+.skin-shinobi .guide-finish-button,
+.skin-shinobi .primary-small,
+.skin-shinobi .record-search button {
+  border: 1px solid #5f1d18;
+  border-radius: 0;
+  color: #fff8ee;
+  background-color: var(--shinobi-seal-dark);
+  background-image: url('./assets/shinobi-seal.png');
+  background-size: 430px 430px;
+  background-blend-mode: multiply;
+  box-shadow: 4px 7px 18px rgba(63, 16, 12, .28);
+}
+
+.skin-shinobi .setup-card .primary-action {
+  width: min(420px, 100%);
+  min-height: 72px;
+  margin: 24px 0 0 auto;
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-size: 24px;
+  letter-spacing: .12em;
+}
+
+.skin-shinobi .setup-card .primary-action:hover,
+.skin-shinobi .guide-primary-button:hover,
+.skin-shinobi .guide-finish-button:hover,
+.skin-shinobi .primary-small:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.skin-shinobi .history-page,
+.skin-shinobi .run-page,
+.skin-shinobi .records-page,
+.skin-shinobi .guide-page {
+  margin-top: 38px;
+  margin-bottom: 88px;
+  padding: 38px 42px 52px;
+}
+
+.skin-shinobi .page-title .eyebrow,
+.skin-shinobi .records-header .eyebrow,
+.skin-shinobi .run-header .eyebrow {
+  display: none;
+}
+
+.skin-shinobi .page-title h1,
+.skin-shinobi .run-header h1,
+.skin-shinobi .records-header h1,
+.skin-shinobi .markdown-report h1,
+.skin-shinobi .guide-hero h1 {
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+  font-weight: 650;
+  letter-spacing: .025em;
+}
+
+.skin-shinobi .page-title p,
+.skin-shinobi .run-header p,
+.skin-shinobi .records-header p,
+.skin-shinobi .muted,
+.skin-shinobi .event span {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .empty-state {
+  min-height: 380px;
+  border: 1px solid rgba(23, 23, 24, .36);
+  border-radius: 0;
+  color: var(--shinobi-muted);
+  background: rgba(255, 255, 255, .13);
+}
+
+.skin-shinobi .run-list {
+  gap: 0;
+  border-top: 1px solid rgba(23, 23, 24, .35);
+}
+
+.skin-shinobi .run-row {
+  border: 0;
+  border-bottom: 1px solid rgba(23, 23, 24, .35);
+  border-radius: 0;
+  color: #1d1c1c;
+  background: transparent;
+}
+
+.skin-shinobi .run-row:hover {
+  border-color: rgba(23, 23, 24, .55);
+  background: rgba(255, 255, 255, .2);
+  box-shadow: none;
+  transform: none;
+}
+
+.skin-shinobi .run-record-actions {
+  border-color: rgba(23, 23, 24, .24);
+  background: rgba(23, 23, 24, .05);
+}
+
+.skin-shinobi .run-record-actions button,
+.skin-shinobi .records-pagination button,
+.skin-shinobi .record-links a {
+  border-color: rgba(23, 23, 24, .38);
+  color: #302d2b;
+  background: rgba(255, 255, 255, .18);
+}
+
+.skin-shinobi .run-record-actions .browse-records {
+  color: #7f2b23;
+  border-color: rgba(127, 43, 35, .48);
+  background: rgba(160, 56, 44, .08);
+}
+
+.skin-shinobi .status,
+.skin-shinobi .record-kind,
+.skin-shinobi .record-tabs button b {
+  border-radius: 0;
+}
+
+.skin-shinobi .status {
+  border: 1px solid rgba(23, 23, 24, .22);
+  color: #4e4946;
+  background: rgba(255, 255, 255, .2);
+}
+
+.skin-shinobi .back-button {
+  color: #5f5955;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.skin-shinobi .error-banner,
+.skin-shinobi .guide-security-note,
+.skin-shinobi .guide-version-note,
+.skin-shinobi .guide-version-note.connected {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.skin-shinobi .progress-panel {
+  --progress-stage-bg: #050810;
+  border: 1px solid rgba(213, 208, 206, .22);
+  border-radius: 0;
+  color: #eee8e0;
+  background-color: #050810;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 480px 480px;
+  box-shadow: 5px 8px 28px rgba(0, 0, 0, .28);
+}
+
+.skin-shinobi .time-display {
+  border-right: 1px solid rgba(213, 208, 206, .18);
+  background: rgba(0, 0, 0, .28);
+}
+
+.skin-shinobi .time-display small,
+.skin-shinobi .progress-stages span.done {
+  color: #cd5145;
+}
+
+.skin-shinobi .progress-stages span.active {
+  color: #eee8e0;
+}
+
+.skin-shinobi .progress-stage-line i {
+  background: rgba(160, 56, 44, .75);
+}
+
+.skin-shinobi .progress-track {
+  height: 8px;
+  border-radius: 0;
+  background: #2c2d31;
+}
+
+.skin-shinobi .progress-track span {
+  border-radius: 0;
+  background: #a0382c;
+}
+
+.skin-shinobi .metric-grid {
+  gap: 0;
+  margin: 16px 0;
+  border: 1px solid rgba(23, 23, 24, .34);
+}
+
+.skin-shinobi .metric-card {
+  border: 0;
+  border-right: 1px solid rgba(23, 23, 24, .24);
+  border-radius: 0;
+  background: rgba(255, 255, 255, .12);
+}
+
+.skin-shinobi .metric-card > small,
+.skin-shinobi .event time {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .metric-card:last-child {
+  border-right: 0;
+}
+
+.skin-shinobi .control-panel,
+.skin-shinobi .activity-panel {
+  border-radius: 0;
+  border-color: rgba(23, 23, 24, .32);
+  background: rgba(255, 255, 255, .14);
+}
+
+.skin-shinobi .event-list,
+.skin-shinobi .event {
+  border-color: rgba(23, 23, 24, .17);
+}
+
+.skin-shinobi .records-toolbar {
+  border-radius: 0;
+  border-color: rgba(213, 208, 206, .2);
+  color: #ece6de;
+  background-color: #050810;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 480px 480px;
+}
+
+.skin-shinobi .record-tabs button {
+  border-radius: 0;
+  color: #bcb5ad;
+}
+
+.skin-shinobi .record-tabs button.active {
+  border-color: rgba(194, 72, 59, .72);
+  color: #fff6ed;
+  background: rgba(160, 56, 44, .22);
+}
+
+.skin-shinobi .record-tabs button b,
+.skin-shinobi .record-tabs button.active b {
+  color: inherit;
+  background: rgba(255, 255, 255, .1);
+}
+
+.skin-shinobi .record-search {
+  border-radius: 0;
+  border-color: rgba(213, 208, 206, .26);
+  color: #c6bfb7;
+  background: rgba(255, 255, 255, .08);
+}
+
+.skin-shinobi .record-search input {
+  color: #f1ebe3;
+  background: transparent;
+}
+
+.skin-shinobi .records-summary {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .record-author span,
+.skin-shinobi .record-fields dt,
+.skin-shinobi .raw-record summary,
+.skin-shinobi .records-pagination {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .record-list {
+  gap: 0;
+  border-top: 1px solid rgba(23, 23, 24, .35);
+}
+
+.skin-shinobi .record-card {
+  padding: 24px 6px;
+  border: 0;
+  border-bottom: 1px solid rgba(23, 23, 24, .3);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.skin-shinobi .record-kind {
+  color: #f6eee5;
+  background: #7d2b24;
+}
+
+.skin-shinobi .record-fields > div {
+  border: 1px solid rgba(23, 23, 24, .18);
+}
+
+.skin-shinobi .raw-record {
+  border-color: rgba(23, 23, 24, .24);
+}
+
+.skin-shinobi .raw-record pre,
+.skin-shinobi .markdown-report pre {
+  border-radius: 0;
+  color: #ebe5de;
+  background-color: #050810;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 480px 480px;
+}
+
+.skin-shinobi .report-page {
+  min-height: calc(100vh - 40px);
+  padding: 36px 0 80px;
+}
+
+.skin-shinobi .report-toolbar {
+  padding: 13px 15px;
+  border: 1px solid rgba(213, 208, 206, .22);
+  color: #ece6df;
+  background-color: #050810;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 480px 480px;
+}
+
+.skin-shinobi .report-toolbar .back-button {
+  color: #d8d1c9;
+}
+
+.skin-shinobi .markdown-report {
+  width: min(980px, calc(100% - 52px));
+  padding: 58px clamp(30px, 6vw, 78px);
+}
+
+.skin-shinobi .markdown-report h1 {
+  border-color: rgba(23, 23, 24, .28);
+}
+
+.skin-shinobi .markdown-report h2,
+.skin-shinobi .markdown-report h3 {
+  color: #2d2927;
+}
+
+.skin-shinobi .markdown-report blockquote {
+  padding: 14px 18px;
+  border-left: 1px solid #8e3027;
+  color: #5c403c;
+  background: rgba(160, 56, 44, .08);
+}
+
+.skin-shinobi .markdown-report th {
+  color: #4c4744;
+  background: rgba(23, 23, 24, .08);
+}
+
+.skin-shinobi .markdown-report th,
+.skin-shinobi .markdown-report td {
+  border-color: rgba(23, 23, 24, .2);
+}
+
+.skin-shinobi .guide-page {
+  overflow: hidden;
+}
+
+.skin-shinobi .guide-hero {
+  margin: -38px -42px 0;
+  padding: 34px 42px;
+  border: 0;
+  border-bottom: 1px solid rgba(213, 208, 206, .22);
+  border-radius: 0;
+  color: #eee8e0;
+  background-color: #050810;
+  background-image: url('./assets/shinobi-ink.png');
+  background-size: 520px 520px;
+  box-shadow: none;
+}
+
+.skin-shinobi .guide-kicker {
+  color: #c94b3f;
+}
+
+.skin-shinobi .guide-hero p,
+.skin-shinobi .guide-time span {
+  color: #b9b2aa;
+}
+
+.skin-shinobi .guide-time {
+  border-radius: 0;
+  border-color: rgba(213, 208, 206, .25);
+  background: rgba(255, 255, 255, .04);
+}
+
+.skin-shinobi .guide-time strong {
+  color: #d15a4d;
+}
+
+.skin-shinobi .guide-security-note,
+.skin-shinobi .guide-version-note {
+  border-color: rgba(135, 96, 51, .46);
+  color: #65462f;
+  background: rgba(166, 112, 45, .11);
+}
+
+.skin-shinobi .guide-version-note.connected {
+  border-color: rgba(62, 111, 82, .45);
+  color: #285b43;
+  background: rgba(67, 118, 88, .1);
+}
+
+.skin-shinobi .guide-security-note p,
+.skin-shinobi .guide-version-note p {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .guide-version-note.connected p,
+.skin-shinobi .guide-connection-result,
+.skin-shinobi .guide-feedback {
+  color: #285b43 !important;
+}
+
+.skin-shinobi .guide-connection-result.warning,
+.skin-shinobi .guide-inline-warning {
+  color: #7e2b23 !important;
+}
+
+.skin-shinobi .guide-steps {
+  gap: 0;
+  border-top: 1px solid rgba(23, 23, 24, .34);
+}
+
+.skin-shinobi .guide-step,
+.skin-shinobi .guide-step-action {
+  padding: 28px 4px;
+  border: 0;
+  border-bottom: 1px solid rgba(23, 23, 24, .3);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.skin-shinobi .guide-step-number {
+  border: 1px solid #77271f;
+  border-radius: 0;
+  color: #fff6eb;
+  background-color: #8b2f26;
+  background-image: url('./assets/shinobi-seal.png');
+  background-size: 210px 210px;
+  background-blend-mode: multiply;
+  box-shadow: 3px 5px 14px rgba(63, 16, 12, .2);
+}
+
+.skin-shinobi .guide-step-body > p,
+.skin-shinobi .guide-troubleshooting p,
+.skin-shinobi .manual-address > p,
+.skin-shinobi .guide-muted {
+  color: var(--shinobi-muted);
+}
+
+.skin-shinobi .guide-step-body li {
+  border: 1px solid rgba(47, 107, 77, .28);
+  border-radius: 0;
+  color: #285b43;
+  background: rgba(68, 120, 89, .08);
+}
+
+.skin-shinobi .manual-address,
+.skin-shinobi .chrome-switch-example {
+  max-width: none;
+}
+
+.skin-shinobi .address-row button {
+  border-radius: 0;
+  border-color: rgba(126, 43, 35, .45);
+  color: #7e2b23;
+  background: rgba(160, 56, 44, .08);
+}
+
+.skin-shinobi kbd {
+  border-radius: 0;
+  color: #ece6de;
+  background: #15171b;
+}
+
+.skin-shinobi .fake-switch {
+  border-radius: 0;
+  background: #8f3027;
+}
+
+.skin-shinobi .fake-switch i {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.skin-shinobi .guide-troubleshooting {
+  border-color: rgba(23, 23, 24, .28);
+}
+
+.skin-shinobi .guide-troubleshooting > div {
+  gap: 0;
+  border: 1px solid rgba(23, 23, 24, .3);
+}
+
+.skin-shinobi .guide-troubleshooting article {
+  border: 0;
+  border-right: 1px solid rgba(23, 23, 24, .22);
+  border-radius: 0;
+  background: rgba(255, 255, 255, .12);
+}
+
+.skin-shinobi .guide-troubleshooting article:last-child {
+  border-right: 0;
+}
+
+.skin-shinobi .toast {
+  border-radius: 0;
+  border-color: #7b2821;
+  color: #fff3ea;
+  background-color: #681f1a;
+  background-image: url('./assets/shinobi-seal.png');
+  background-size: 420px 420px;
+  background-blend-mode: multiply;
+  box-shadow: 8px 12px 32px rgba(0, 0, 0, .34);
+}
+
+@media (max-width: 1050px) {
+  .skin-shinobi {
+    padding-left: 0;
+  }
+
+  .skin-shinobi .topbar {
+    width: 100%;
+    height: auto;
+    min-height: 76px;
+    padding: 11px 18px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(213, 208, 206, .22);
+    flex-direction: row;
+    align-items: center;
+    gap: 18px;
+    position: sticky;
+    inset: 0 auto auto 0;
+  }
+
+  .skin-shinobi .topbar nav {
+    width: auto;
+    flex: 1;
+    flex-direction: row;
+  }
+
+  .skin-shinobi .topbar nav button,
+  .skin-shinobi .topbar nav .guide-nav {
+    width: auto;
+    min-height: 48px;
+  }
+
+  .skin-shinobi .topbar-tools {
+    width: auto;
+    margin: 0;
+    flex-direction: row;
+  }
+
+  .skin-shinobi .skin-picker,
+  .skin-shinobi .local-pill {
+    width: auto;
+  }
+
+  .skin-shinobi .topbar nav button.active::after,
+  .skin-shinobi .topbar nav .guide-nav.active::after {
+    width: auto;
+    height: 3px;
+    inset: auto 10px 0;
+  }
+
+  .skin-shinobi .hero-copy {
+    grid-template-columns: 1fr;
+  }
+
+  .skin-shinobi .privacy-note {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .skin-shinobi .content-width,
+  .skin-shinobi .page-grid,
+  .skin-shinobi .markdown-report {
+    width: min(100% - 22px, 1180px);
+  }
+
+  .skin-shinobi .topbar {
+    padding: 9px 11px;
+    flex-wrap: wrap;
+    gap: 7px 10px;
+  }
+
+  .skin-shinobi .brand {
+    width: auto;
+  }
+
+  .skin-shinobi .brand small,
+  .skin-shinobi .local-pill,
+  .skin-shinobi .skin-picker > span,
+  .skin-shinobi .topbar nav button svg {
+    display: none;
+  }
+
+  .skin-shinobi .topbar nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: stretch;
+  }
+
+  .skin-shinobi .topbar nav button,
+  .skin-shinobi .topbar nav .guide-nav {
+    flex: 1;
+    justify-content: center;
+    padding: 0 7px;
+    font-size: 12px;
+  }
+
+  .skin-shinobi .topbar-tools {
+    margin-left: auto;
+  }
+
+  .skin-shinobi .skin-picker {
+    min-height: 36px;
+    padding: 5px 7px;
+  }
+
+  .skin-shinobi .page-grid {
+    padding-top: 14px;
+  }
+
+  .skin-shinobi .hero-copy,
+  .skin-shinobi .setup-card,
+  .skin-shinobi .history-page,
+  .skin-shinobi .run-page,
+  .skin-shinobi .records-page,
+  .skin-shinobi .guide-page {
+    padding: 23px 17px 30px;
+  }
+
+  .skin-shinobi .hero-copy h1 {
+    font-size: 29px;
+  }
+
+  .skin-shinobi .shinobi-mission-score {
+    margin: -23px -17px 26px;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .skin-shinobi .shinobi-mission-score li {
+    border-bottom: 1px solid rgba(23, 23, 24, .2);
+  }
+
+  .skin-shinobi .preset-grid,
+  .skin-shinobi .advanced-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .skin-shinobi .preset,
+  .skin-shinobi .mode-card,
+  .skin-shinobi .preset:last-child,
+  .skin-shinobi .mode-card:last-child {
+    min-height: 86px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(23, 23, 24, .24);
+  }
+
+  .skin-shinobi .inline-options,
+  .skin-shinobi .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skin-shinobi .metric-card,
+  .skin-shinobi .metric-card:last-child {
+    min-height: 105px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(23, 23, 24, .2);
+  }
+
+  .skin-shinobi .setup-card .primary-action {
+    width: 100%;
+    font-size: 20px;
+  }
+
+  .skin-shinobi .guide-hero {
+    margin: -23px -17px 0;
+    padding: 27px 20px;
+  }
+
+  .skin-shinobi .guide-troubleshooting > div {
+    grid-template-columns: 1fr;
+  }
+
+  .skin-shinobi .guide-troubleshooting article,
+  .skin-shinobi .guide-troubleshooting article:last-child {
+    border-right: 0;
+    border-bottom: 1px solid rgba(23, 23, 24, .22);
+  }
+
+  .skin-shinobi .report-toolbar {
+    width: min(100% - 22px, 1180px);
+  }
+
+  .skin-shinobi .markdown-report {
+    padding: 34px 19px;
+  }
+}
+
+/* Interactive report — Shinobi skin preserves the shared information architecture. */
+.skin-shinobi .report-dossier.content-width,
+.skin-shinobi .report-toolbar.content-width {
+  width: min(1360px, calc(100% - 52px));
+}
+
+.skin-shinobi .report-dossier {
+  border-color: rgba(213, 208, 206, .26);
+  border-radius: 0;
+  color: var(--shinobi-ink);
+  background-color: var(--shinobi-paper);
+  background-image: url('./assets/shinobi-paper.png');
+  background-size: 480px 480px;
+  box-shadow: 14px 18px 42px rgba(0, 0, 0, .26);
+}
+
+.skin-shinobi .report-hero,
+.skin-shinobi .report-overview,
+.skin-shinobi .report-topic-detail {
+  background-color: rgba(213, 208, 206, .84);
+  background-image: url('./assets/shinobi-paper.png');
+  background-size: 480px 480px;
+}
+
+.skin-shinobi .report-hero,
+.skin-shinobi .report-overview,
+.skin-shinobi .report-overview > div,
+.skin-shinobi .report-topic-nav,
+.skin-shinobi .report-quality,
+.skin-shinobi .report-panel-heading,
+.skin-shinobi .report-topic-list > button,
+.skin-shinobi .topic-detail-header,
+.skin-shinobi .sentiment-tabs,
+.skin-shinobi .sentiment-tabs button,
+.skin-shinobi .evidence-heading,
+.skin-shinobi .evidence-item,
+.skin-shinobi .report-quality section,
+.skin-shinobi .report-quality dl > div {
+  border-color: rgba(23, 23, 24, .22);
+}
+
+.skin-shinobi .report-kicker { color: var(--shinobi-seal-dark); letter-spacing: .14em; }
+.skin-shinobi .report-hero h1,
+.skin-shinobi .topic-row-title strong,
+.skin-shinobi .topic-detail-header h2,
+.skin-shinobi .report-panel-heading span,
+.skin-shinobi .report-quality h3,
+.skin-shinobi .evidence-item blockquote {
+  font-family: "Source Han Serif SC", "Songti SC", "STSong", serif;
+}
+.skin-shinobi .report-hero > div > p,
+.skin-shinobi .topic-detail-header > p,
+.skin-shinobi .topic-row-summary,
+.skin-shinobi .evidence-item blockquote { color: #2d2927; }
+.skin-shinobi .report-confidence {
+  border-radius: 0;
+  border-color: rgba(23, 23, 24, .24);
+  background: rgba(23, 23, 24, .055);
+}
+.skin-shinobi .report-confidence svg { color: var(--shinobi-success); }
+.skin-shinobi .report-overview { background-color: rgba(200, 194, 191, .72); }
+.skin-shinobi .report-overview svg,
+.skin-shinobi .report-quality h3 svg { color: #6b302a; }
+.skin-shinobi .report-topic-nav,
+.skin-shinobi .report-quality {
+  background-color: rgba(200, 194, 191, .8);
+  background-image: url('./assets/shinobi-paper.png');
+  background-size: 480px 480px;
+}
+.skin-shinobi .report-topic-list > button:hover { background: rgba(236, 231, 223, .36); }
+.skin-shinobi .report-topic-list > button.active {
+  background: rgba(236, 231, 223, .56);
+  box-shadow: inset 4px 0 0 var(--shinobi-seal);
+}
+.skin-shinobi .topic-row-link,
+.skin-shinobi .evidence-item footer a,
+.skin-shinobi .pricing-link { color: var(--shinobi-seal-dark); }
+.skin-shinobi .topic-row-sentiments .positive,
+.skin-shinobi .sentiment-tabs .sentiment-positive.active { color: var(--shinobi-success); }
+.skin-shinobi .topic-row-sentiments .negative,
+.skin-shinobi .sentiment-tabs .sentiment-negative.active { color: var(--shinobi-warning); }
+.skin-shinobi .topic-seal {
+  border-radius: 0;
+  color: var(--shinobi-bone);
+  background-color: var(--shinobi-seal-dark);
+  background-image: url('./assets/shinobi-seal.png');
+  background-size: 180px 180px;
+}
+.skin-shinobi .sentiment-tabs button { background: rgba(200, 194, 191, .46); }
+.skin-shinobi .sentiment-tabs button.active { background: rgba(236, 231, 223, .58); }
+.skin-shinobi .sentiment-tabs .sentiment-positive.active { border-bottom-color: var(--shinobi-success); }
+.skin-shinobi .sentiment-tabs .sentiment-negative.active { border-bottom-color: var(--shinobi-warning); }
+.skin-shinobi .report-quality .usage-cost dd { color: var(--shinobi-seal-dark); }
+
+@media (max-width: 760px) {
+  .skin-shinobi .report-dossier.content-width,
+  .skin-shinobi .report-toolbar.content-width { width: min(100% - 22px, 1360px); }
+  .skin-shinobi .report-topic-list > button { border-radius: 0; }
+  .skin-shinobi .report-topic-list > button.active { box-shadow: inset 0 4px 0 var(--shinobi-seal); }
+}

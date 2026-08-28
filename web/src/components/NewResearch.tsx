@@ -89,6 +89,12 @@ export const NewResearch = ({
       </section>
 
       <form className="setup-card" onSubmit={submit}>
+        <ol className="shinobi-mission-score" aria-hidden="true">
+          <li className="complete"><span>1</span><strong>设定时长</strong><small>最长 {durationMinutes} 分钟</small></li>
+          <li className="current"><span>2</span><strong>情报范围</strong><small>{keywordList.length} 个关键词 · {contentWindowDays} 天</small></li>
+          <li><span>3</span><strong>调查方式</strong><small>{mode === 'live' ? `真实调查 · ${browserWindowCount} 标签页` : '演示模式'}</small></li>
+          <li><span>4</span><strong>确认任务</strong><small>最多 {maxSources} 个来源</small></li>
+        </ol>
         <div className="step-heading"><span>1</span><div><h2>最长采集多久？</h2><p>达到时长或来源上限时结束，暂停时间不计入</p></div></div>
         <div className="preset-grid">
           {presets.map((preset) => (

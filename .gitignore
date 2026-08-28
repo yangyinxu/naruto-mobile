@@ -153,3 +153,6 @@ build/
 release/
 playwright-report/
 test-results/
+
+# Local design and visual QA artifacts
+.impeccable/

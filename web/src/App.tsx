@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState} from 'react';
-import {Archive, BookOpen, Flame, PlusCircle, X} from 'lucide-react';
+import {Archive, BookOpen, Flame, Palette, PlusCircle, X} from 'lucide-react';
 import {ChromeGuide} from './components/ChromeGuide';
 import {History} from './components/History';
 import {NewResearch} from './components/NewResearch';
@@ -10,6 +10,16 @@ import {api} from './lib/api';
 import {AppSettings, ChromeConnectionStatus, ResearchRequest, RunManifest} from './types';
 
 type View = 'new' | 'guide' | 'history' | 'run' | 'report' | 'records';
+type Skin = 'classic' | 'shinobi';
+
+const SKIN_STORAGE_KEY = 'naruto-research-skin';
+
+const initialSkin = (): Skin => {
+  const forced = new URLSearchParams(window.location.search).get('skin');
+  if (forced === 'classic' || forced === 'shinobi') return forced;
+  const saved = window.localStorage.getItem(SKIN_STORAGE_KEY);
+  return saved === 'shinobi' ? 'shinobi' : 'classic';
+};
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>();
@@ -21,6 +31,7 @@ export default function App() {
   const [chromeStatus, setChromeStatus] = useState<ChromeConnectionStatus>();
   const [connectingChrome, setConnectingChrome] = useState(false);
   const [error, setError] = useState('');
+  const [skin, setSkin] = useState<Skin>(initialSkin);
 
   const loadRuns = useCallback(() => api.listRuns().then(setRuns).catch((reason) => setError(reason.message)), []);
   useEffect(() => {
@@ -42,6 +53,12 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({top: 0, left: 0, behavior: 'auto'});
   }, [view]);
+  useEffect(() => {
+    window.localStorage.setItem(SKIN_STORAGE_KEY, skin);
+    document.documentElement.dataset.skin = skin;
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    themeColor?.setAttribute('content', skin === 'shinobi' ? '#010814' : '#15130f');
+  }, [skin]);
 
   const start = async (request: ResearchRequest) => {
     setBusy(true);
@@ -141,7 +158,7 @@ export default function App() {
   if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在启动本地调查工具…</strong></div>;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell skin-${skin}`} data-skin={skin}>
       <header className="topbar">
         <button className="brand" onClick={() => setView('new')}><span><Flame/></span><div><strong>火影手游</strong><small>玩家反馈调查工具</small></div></button>
         <nav>
@@ -149,7 +166,17 @@ export default function App() {
           <button className={`guide-nav ${view === 'guide' ? 'active' : ''}`} onClick={() => setView('guide')}><BookOpen/><span className="guide-nav-label"><b>Chrome </b>教程</span><span className="guide-nav-badge">首次必看</span></button>
           <button className={view === 'history' ? 'active' : ''} onClick={() => {void loadRuns(); setView('history');}}><Archive/>历史调查{runs.length > 0 && <i>{runs.length}</i>}</button>
         </nav>
-        <div className="local-pill"><span/>本地运行</div>
+        <div className="topbar-tools">
+          <label className="skin-picker">
+            <Palette aria-hidden="true"/>
+            <span>皮肤</span>
+            <select aria-label="界面皮肤" value={skin} onChange={(event) => setSkin(event.target.value as Skin)}>
+              <option value="classic">经典</option>
+              <option value="shinobi">忍者密卷</option>
+            </select>
+          </label>
+          <div className="local-pill"><span/>本地运行</div>
+        </div>
       </header>
 
       {view === 'new' && (
