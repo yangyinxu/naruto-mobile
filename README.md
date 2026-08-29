@@ -14,7 +14,7 @@
 
 真实调查会连接用户日常使用、已经登录 B站的 Chrome。网页会自动发现 Chrome 的本地调试端口、请求浏览器授权并检查 B站登录状态；用户不需要填写 `9222`、输入账号或复制 Cookie。远程调试开关和每次连接的 Chrome 授权提示仍需用户本人确认，工具不会绕过浏览器的安全设置。
 
-真实调查还需要在项目 `.env` 中配置 `OPENAI_API_KEY`。评论分析请求只发送视频语境、评论正文、父评论正文和公开互动数，不发送用户名、UID、用户主页或作者哈希。`.env.example` 保留安全占位示例，真实密钥不得提交到 Git。
+真实调查由 Archtree 私人服务器代为调用 OpenAI。朋友使用她自己的普通 Archtree 账号登录即可使用；密码不会保存，可轮换的登录会话由 Windows 安全存储加密保存，`OPENAI_API_KEY` 只存在于服务器。评论分析请求只发送视频语境、评论正文、父评论正文和公开互动数，不发送用户名、UID、用户主页或作者哈希。
 
 第一次使用：
 
@@ -98,7 +98,7 @@ npm install
 npm run package:win
 ```
 
-成品位于 `release/NarutoFeedbackResearch-0.1.0-portable.exe`。把这一个 EXE 复制给其他 Windows 电脑即可；目标电脑不需要安装 Node.js 或项目依赖，但真实调查仍需要 Chrome 144 或更新版本，并由用户按页面提示授权连接已登录的 B站账号。
+成品位于 `release/NarutoFeedbackResearch-0.1.0-portable.exe`。把这一个 EXE 交给其他 Windows 电脑即可；目标电脑不需要安装 Node.js、项目依赖或 OpenAI 密钥，但真实调查需要一个普通 Archtree 账号、Chrome 144 或更新版本，并由用户按页面提示授权连接已登录的 B站账号。
 
 第一次运行时，Windows SmartScreen 可能会提示“未知发布者”，这是因为当前便携版尚未购买代码签名证书；用户确认来源可信后可选择继续运行。调查数据默认保存在当前 Windows 用户的“文档/火影手游玩家反馈调查工具/data”目录，也可以在主页中改到其他文件夹；如果 Windows 将“文档”重定向到 OneDrive，程序会跟随系统实际的“文档”位置。
 
@@ -125,7 +125,8 @@ test/                           后端与端到端本地测试
 - 公开用户名、公开 UID 和评论正文会以明文保存在本地，用于把分析结果追溯到原始公开来源；工具不采集 IP 属地等页面未用于研究的额外画像字段。
 - 数据目录包含可识别的公开账号信息，使用者应限制目录访问，不要把 `data/runs/` 提交到 Git 或无意分享给他人。
 - 热门优先样本不代表全体玩家，报告必须展示来源覆盖和样本限制。
-- 真实模式会把去标识化的评论分析语境发送给 OpenAI；本地原始 JSONL 不会上传为文件。
+- 真实模式会把去标识化的评论分析语境经 `https://kashewt.com/naruto-mobile/api/v1` 发送给私人 Archtree 服务器，再由服务器调用 OpenAI；本地原始 JSONL 不会上传为文件。
+- 打包后的 EXE 主动忽略本机 `OPENAI_API_KEY`。Archtree 密码不持久化，refresh session 使用 Electron `safeStorage`/Windows DPAPI 加密保存，access token 只保留在主进程内存中。
 - AI 结果通过稳定意见 ID 和逐字证据回指原始数据，仍应定期使用人工标准答案集评测。
 - 规则分类器是演示和回退基线，不用于真实调查结论。
 - 演示模式全部为虚构数据，报告会明确标注，不能用于真实判断。

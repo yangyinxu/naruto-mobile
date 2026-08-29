@@ -11,6 +11,13 @@
 
 React 负责页面组件和交互状态；Vite 负责 TypeScript/JSX 编译和生产静态资源。正式运行时不启动 Vite，Express 只提供已经构建的 `web/dist/`。
 
+真实调查的 AI 传输使用固定版本的 Archtree 专用代理。Electron 复用
+Archtree 的原生 access/refresh 会话，只把 refresh session 通过 Windows
+`safeStorage` 保存，密码不持久化；本机分类器保留硬噪声过滤、分批、
+缓存、重试、结果校验和报告生成，但不持有 OpenAI 密钥。代理固定模型、
+提示词、Structured Outputs schema、输出上限与 `store: false`，只接受
+已登录账号发送的去标识化 `triage`/`detail` 协议字段。
+
 ## 运行流程
 
 ```text

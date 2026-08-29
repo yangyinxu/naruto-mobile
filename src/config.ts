@@ -3,6 +3,7 @@ import {randomBytes} from 'node:crypto';
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {readSavedDataRoot} from './services/dataRootSettings';
+import {DEFAULT_NARUTO_PROXY_BASE_URL} from './services/archtreeAuth';
 import {ReasoningEffort} from './domain/types';
 
 export const resolveEnvFileCandidates = (
@@ -50,6 +51,8 @@ export interface AppConfig {
   browserHeadless: boolean;
   openBrowser: boolean;
   uidSalt: string;
+  analysisTransport?: 'proxy' | 'direct';
+  proxyBaseUrl?: string;
   openAiApiKey?: string;
   aiModel: string;
   aiReasoningEffort: ReasoningEffort;
@@ -84,6 +87,7 @@ export const localUidSalt = (dataRoot: string) => {
 export const loadAppConfig = (): AppConfig => {
   const defaultDataRoot = process.env.RESEARCH_DEFAULT_DATA_DIR?.trim() || 'data';
   const dataRoot = resolve(process.env.RESEARCH_DATA_DIR?.trim() || readSavedDataRoot() || defaultDataRoot);
+  const configuredTransport = process.env.NARUTO_MOBILE_ANALYSIS_TRANSPORT?.trim().toLowerCase();
   return {
     host: '127.0.0.1',
     port: positiveInteger(process.env.PORT, 3765),
@@ -92,6 +96,11 @@ export const loadAppConfig = (): AppConfig => {
     browserHeadless: booleanValue(process.env.BROWSER_HEADLESS, false),
     openBrowser: !booleanValue(process.env.NO_OPEN, false),
     uidSalt: localUidSalt(dataRoot),
+    analysisTransport: configuredTransport === 'direct' || configuredTransport === 'proxy'
+      ? configuredTransport
+      : process.env.OPENAI_API_KEY?.trim() ? 'direct' : 'proxy',
+    proxyBaseUrl: process.env.NARUTO_MOBILE_PROXY_BASE_URL?.trim()
+      || DEFAULT_NARUTO_PROXY_BASE_URL,
     openAiApiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
     aiModel: process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna',
     aiReasoningEffort: reasoningEffort(process.env.OPENAI_REASONING_EFFORT),

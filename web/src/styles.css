@@ -635,3 +635,104 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
   .report-quality { display: block; border-top: 1px solid var(--line); }
   .report-quality .report-panel-heading, .report-quality section { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+.analysis-activation-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid #e7b98e;
+  border-radius: 16px;
+  background: #fff7ed;
+}
+
+.analysis-activation-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.analysis-activation-copy {
+  display: grid;
+  gap: 7px;
+}
+
+.analysis-activation-copy small {
+  color: #6b6257;
+  line-height: 1.55;
+}
+
+.analysis-activation-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 9px;
+  margin-top: 5px;
+}
+
+.analysis-activation-controls input {
+  min-width: 0;
+  flex: 1;
+  padding: 11px 12px;
+  border: 1px solid #d6c6b6;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.analysis-activation-controls button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 10px;
+  background: #b94720;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.analysis-activation-controls button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.analysis-activation-copy p {
+  margin: 0;
+  color: #b42318;
+  font-size: 13px;
+}
+
+.analysis-account-card {
+  border-color: #9bcbb6;
+  background: #f1fbf6;
+}
+
+.analysis-account-card .analysis-activation-icon {
+  color: #21664e;
+  background: #dff4e9;
+}
+
+.analysis-logout-button {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  padding: 9px 12px;
+  border: 1px solid #b7c9c0;
+  border-radius: 9px;
+  color: #315e4d;
+  background: #fff;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .analysis-activation-controls { grid-template-columns: 1fr; }
+}

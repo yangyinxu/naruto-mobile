@@ -70,6 +70,7 @@ export default function App() {
       await loadRuns();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      void api.settings().then(setSettings).catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -155,6 +156,18 @@ export default function App() {
     }
   };
 
+  const loginAnalysis = async (identifier: string, password: string) => {
+    setError('');
+    await api.loginAnalysis(identifier, password);
+    setSettings(await api.settings());
+  };
+
+  const logoutAnalysis = async () => {
+    setError('');
+    await api.logoutAnalysis();
+    setSettings(await api.settings());
+  };
+
   if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在启动本地调查工具…</strong></div>;
 
   return (
@@ -180,7 +193,7 @@ export default function App() {
       </header>
 
       {view === 'new' && (
-        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
+        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onLoginAnalysis={loginAnalysis} onLogoutAnalysis={logoutAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'guide' && (
         <ChromeGuide chromeSettingsSupported={(settings.apiVersion ?? 0) >= 6} chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onOpenChromeSettings={openChromeSettings} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>

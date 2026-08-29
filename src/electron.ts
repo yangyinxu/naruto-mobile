@@ -1,10 +1,16 @@
 import {createServer as createNetServer} from 'node:net';
+import {mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Server} from 'node:http';
-import {app as electronApp, BrowserWindow, dialog, shell} from 'electron';
+import {app as electronApp, BrowserWindow, dialog, safeStorage, shell} from 'electron';
 import {createApp} from './api/app';
 import {loadAppConfig} from './config';
 import {FileRunStore} from './infrastructure/fileRunStore';
+import {
+  ArchtreeAuthService,
+  DEFAULT_NARUTO_PROXY_BASE_URL,
+  StoredArchtreeSession
+} from './services/archtreeAuth';
 import {isResearchToolRunning} from './services/existingInstance';
 import {RunManager} from './services/runManager';
 
@@ -105,8 +111,46 @@ const start = async () => {
     'data'
   );
   process.env.NO_OPEN = 'true';
+  if (electronApp.isPackaged) {
+    process.env.NARUTO_MOBILE_ANALYSIS_TRANSPORT = 'proxy';
+    delete process.env.OPENAI_API_KEY;
+  }
+
+  const credentialDirectory = electronApp.getPath('userData');
+  const credentialPath = join(credentialDirectory, 'archtree-session.bin');
+  let initialSession: unknown;
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      const encrypted = await readFile(credentialPath);
+      initialSession = JSON.parse(safeStorage.decryptString(encrypted));
+    } catch {
+      initialSession = undefined;
+    }
+  }
+  const persistSession = async (session: StoredArchtreeSession | undefined) => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Windows 安全存储当前不可用，Archtree 登录没有写入磁盘。');
+    }
+    if (!session) {
+      await rm(credentialPath, {force: true});
+      return;
+    }
+    await mkdir(credentialDirectory, {recursive: true});
+    await writeFile(
+      credentialPath,
+      safeStorage.encryptString(JSON.stringify(session)),
+      {mode: 0o600}
+    );
+  };
 
   managerConfig = loadAppConfig();
+  if (electronApp.isPackaged) {
+    managerConfig.analysisTransport = 'proxy';
+    managerConfig.proxyBaseUrl = DEFAULT_NARUTO_PROXY_BASE_URL;
+    managerConfig.openAiApiKey = undefined;
+    managerConfig.aiModel = 'gpt-5.6-luna';
+    managerConfig.aiReasoningEffort = 'medium';
+  }
   const preferredUrl = `http://${managerConfig.host}:${managerConfig.port}`;
   if (await isResearchToolRunning(preferredUrl)) {
     await openMainWindow(preferredUrl);
@@ -115,7 +159,14 @@ const start = async () => {
 
   managerConfig.port = await findAvailablePort(managerConfig.port);
   managerConfig.openBrowser = false;
-  manager = new RunManager(new FileRunStore(managerConfig.dataRoot), managerConfig);
+  const analysisAuth = managerConfig.analysisTransport === 'proxy'
+    ? new ArchtreeAuthService({
+      proxyBaseUrl: managerConfig.proxyBaseUrl,
+      initialSession,
+      persistSession
+    })
+    : undefined;
+  manager = new RunManager(new FileRunStore(managerConfig.dataRoot), managerConfig, analysisAuth);
   await manager.initialize();
   httpServer = await listen(managerConfig.port, managerConfig.host);
 

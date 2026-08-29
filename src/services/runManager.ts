@@ -10,6 +10,7 @@ import {
 } from '../domain/types';
 import {FileRunStore} from '../infrastructure/fileRunStore';
 import {processRun} from '../processing/runProcessor';
+import {ArchtreeAuthService} from './archtreeAuth';
 import {ChromeConnectionService} from './chromeConnection';
 
 type Directive = 'continue' | 'pause' | 'finalize';
@@ -35,6 +36,7 @@ export class RunManager {
   constructor(
     store: FileRunStore,
     private readonly config: AppConfig,
+    readonly analysisAuth?: ArchtreeAuthService,
     readonly chromeConnection = new ChromeConnectionService(config)
   ) {
     this.currentStore = store;
@@ -43,6 +45,16 @@ export class RunManager {
 
   get store() {
     return this.currentStore;
+  }
+
+  private async ensureLiveAnalysisReady() {
+    const transport = this.config.analysisTransport ?? (this.config.openAiApiKey ? 'direct' : 'proxy');
+    if (transport === 'proxy') {
+      if (!this.analysisAuth) throw new Error('真实调查需要先登录 Archtree。');
+      await this.analysisAuth.ensureAccess();
+      return;
+    }
+    if (!this.config.openAiApiKey) throw new Error('真实调查需要先配置 OPENAI_API_KEY。');
   }
 
   async initialize() {
@@ -115,6 +127,7 @@ export class RunManager {
 
   async start(request: ResearchRequest) {
     if (request.mode === 'live') {
+      await this.ensureLiveAnalysisReady();
       const lease = await this.chromeConnection.acquire();
       lease.release();
     }
@@ -156,6 +169,7 @@ export class RunManager {
       throw new Error('采集时间已经用完，可以增加时间或直接生成报告。');
     }
     if (manifest.request.mode === 'live') {
+      await this.ensureLiveAnalysisReady();
       const lease = await this.chromeConnection.acquire();
       lease.release();
     }
@@ -204,7 +218,14 @@ export class RunManager {
     }
     const manifest = await this.get(runId);
     if (manifest.request.mode === 'demo') throw new Error('演示调查继续使用本地规则，不调用 AI。');
-    if (!this.config.openAiApiKey) throw new Error('重新分析需要先配置 OPENAI_API_KEY。');
+    const transport = this.config.analysisTransport ?? (this.config.openAiApiKey ? 'direct' : 'proxy');
+    if (transport === 'proxy' && !this.analysisAuth?.signedIn) {
+      throw new Error('重新分析需要先登录 Archtree。');
+    }
+    if (transport === 'direct' && !this.config.openAiApiKey) {
+      throw new Error('重新分析需要先配置 OPENAI_API_KEY。');
+    }
+    await this.ensureLiveAnalysisReady();
     this.backgroundProcessing.add(runId);
     const processing = await this.update(runId, (current) => ({
       ...current,
@@ -235,7 +256,9 @@ export class RunManager {
           error: undefined
         }))
         : await this.get(runId);
+      if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
       const result = await processRun(this.store, manifest, this.config, {
+        analysisProxyRequest: this.analysisAuth?.request.bind(this.analysisAuth),
         onAiProgress: async ({completed, total, cached}) => {
           await this.update(runId, (current) => ({
             ...current,
@@ -399,6 +422,7 @@ export class RunManager {
     const early = result.outcome === 'finalized';
     const stopReason = early ? 'user_finalized' as const
       : result.outcome === 'budget_exhausted' ? 'budget_exhausted' as const : 'source_exhausted' as const;
+    if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
     let processingManifest = await this.update(runId, (current) => ({
       ...current,
       state: 'processing',
@@ -410,6 +434,7 @@ export class RunManager {
       progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
     }));
     const processed = await processRun(this.store, processingManifest, this.config, {
+      analysisProxyRequest: this.analysisAuth?.request.bind(this.analysisAuth),
       onAiProgress: async ({completed, total, cached}) => {
         await this.update(runId, (current) => ({
           ...current,

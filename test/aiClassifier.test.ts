@@ -59,6 +59,18 @@ const aiResult = (opinionId: string, insightValue: 'strong' | 'weak') => ({
   needsReview: insightValue === 'weak'
 });
 
+test('keeps proxy detail batches within the server protocol limit', () => {
+  const classifier = new AiClassifier({
+    proxy: {
+      baseUrl: 'https://kashewt.com/naruto-mobile/api/v1',
+      request: async () => new Response('{}', {status: 200})
+    },
+    batchSize: 50
+  });
+
+  assert.equal(classifier.batchSize, 10);
+});
+
 test('uses Luna structured outputs, includes parent context, and excludes author identity', async () => {
   const opinions = [
     opinion({}),
@@ -171,4 +183,50 @@ test('uses Luna structured outputs, includes parent context, and excludes author
   assert.equal(cached.usage.requestCount, 0);
   assert.equal(cached.usage.totalTokens, 0);
   assert.equal(cached.usage.estimatedCostUsd, 0);
+});
+
+test('uses authenticated Archtree proxy requests without sending an OpenAI key or author identity', async () => {
+  const seen: Array<{url: string; authorization: string; body: Record<string, unknown>}> = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+    seen.push({
+      url: String(url),
+      authorization: String(new Headers(init?.headers).get('authorization')),
+      body
+    });
+    const results = body.kind === 'triage' ? [{
+      opinionId: 'root-opinion', decision: 'analyze', gameRelevant: true,
+      informationType: 'product_feedback', reasonCode: 'possible_product_feedback'
+    }] : [aiResult('root-opinion', 'strong')];
+    return new Response(JSON.stringify({
+      protocolVersion: 1,
+      kind: body.kind,
+      promptVersion: body.kind === 'triage' ? 'naruto-triage-v3' : 'naruto-opinion-v3',
+      model: 'gpt-5.6-luna',
+      results,
+      usage: {inputTokens: 100, cachedInputTokens: 20, outputTokens: 30, reasoningTokens: 5, totalTokens: 130}
+    }), {status: 200, headers: {'content-type': 'application/json'}});
+  }) as typeof fetch;
+  const authenticatedRequest = async (url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.has('authorization'), false);
+    headers.set('authorization', 'Bearer archtree-access-token');
+    return fetchImpl(url, {...init, headers});
+  };
+  const classifier = new AiClassifier({
+    proxy: {baseUrl: 'https://kashewt.com/naruto-mobile/api/v1', request: authenticatedRequest},
+    fetchImpl,
+    concurrency: 1,
+    sleep: async () => undefined
+  });
+  const output = await classifier.classifyAll([opinion({})], [content]);
+
+  assert.equal(seen.length, 2);
+  assert.ok(seen.every((item) => item.url.endsWith('/classify')));
+  assert.ok(seen.every((item) => item.authorization === 'Bearer archtree-access-token'));
+  const serialized = JSON.stringify(seen);
+  assert.doesNotMatch(serialized, /OPENAI_API_KEY|不应发送的用户名|123456|private-author-hash|space\.bilibili/);
+  assert.equal(output.classifications[0].reportEligible, true);
+  assert.equal(output.usage.requestCount, 2);
+  assert.equal(output.usage.totalTokens, 260);
 });

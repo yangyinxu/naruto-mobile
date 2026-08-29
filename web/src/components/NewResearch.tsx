@@ -1,5 +1,5 @@
 import {FormEvent, useMemo, useState} from 'react';
-import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, LoaderCircle, MonitorCog, Search, Sparkles, Unplug} from 'lucide-react';
+import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, KeyRound, LoaderCircle, LogOut, MonitorCog, Search, Sparkles, Unplug} from 'lucide-react';
 import {AppSettings, ChromeConnectionStatus, ResearchRequest} from '../types';
 
 interface Props {
@@ -10,6 +10,8 @@ interface Props {
   selectingDataRoot: boolean;
   onStart: (request: ResearchRequest) => Promise<void>;
   onSelectDataRoot: () => Promise<void>;
+  onLoginAnalysis?: (identifier: string, password: string) => Promise<void>;
+  onLogoutAnalysis?: () => Promise<void>;
   onOpenGuide: () => void;
   onConnectChrome: () => Promise<void>;
   onDisconnectChrome: () => Promise<void>;
@@ -29,6 +31,8 @@ export const NewResearch = ({
   selectingDataRoot,
   onStart,
   onSelectDataRoot,
+  onLoginAnalysis,
+  onLogoutAnalysis,
   onOpenGuide,
   onConnectChrome,
   onDisconnectChrome
@@ -41,6 +45,10 @@ export const NewResearch = ({
   const [mode, setMode] = useState<'live' | 'demo'>(settings.defaults.mode);
   const [browserWindowCount, setBrowserWindowCount] = useState(settings.defaults.browserWindowCount);
   const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
+  const [archtreeIdentifier, setArchtreeIdentifier] = useState('');
+  const [archtreePassword, setArchtreePassword] = useState('');
+  const [authenticating, setAuthenticating] = useState(false);
+  const [authenticationError, setAuthenticationError] = useState('');
   const keywordList = useMemo(() => keywords.split(/\r?\n|，|,/).map((item) => item.trim()).filter(Boolean), [keywords]);
   const chromeTransitioning = connectingChrome
     || chromeStatus?.state === 'connecting'
@@ -70,6 +78,33 @@ export const NewResearch = ({
     });
   };
 
+  const loginAnalysis = async () => {
+    setAuthenticating(true);
+    setAuthenticationError('');
+    try {
+      if (!onLoginAnalysis) throw new Error('当前版本不支持 Archtree 登录。');
+      await onLoginAnalysis(archtreeIdentifier, archtreePassword);
+      setArchtreePassword('');
+    } catch (error) {
+      setAuthenticationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthenticating(false);
+    }
+  };
+
+  const logoutAnalysis = async () => {
+    setAuthenticating(true);
+    setAuthenticationError('');
+    try {
+      if (!onLogoutAnalysis) throw new Error('当前版本不支持退出 Archtree。');
+      await onLogoutAnalysis();
+    } catch (error) {
+      setAuthenticationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthenticating(false);
+    }
+  };
+
   return (
     <main className="new-research page-grid">
       <section className="hero-copy">
@@ -83,7 +118,7 @@ export const NewResearch = ({
             <button className="data-location-button" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
               <FolderOpen size={16}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
             </button>
-            <small>真实模式会把不含用户名、UID和主页的评论语境发送给 OpenAI；更改位置不会移动原文件。</small>
+            <small>真实模式会把不含用户名、UID和主页的评论语境经由私人服务器发送给 OpenAI；更改位置不会移动原文件。</small>
           </div>
         </div>
       </section>
@@ -129,7 +164,7 @@ export const NewResearch = ({
           <small>选择调查运行模式</small>
         </div>
         <div className="advanced-panel">
-          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : '需要配置 OpenAI API 密钥'}</small></span></label>
+          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥' : '需要登录 Archtree'}</small></span></label>
           <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span></label>
         </div>
         <label className={`parallel-windows ${mode === 'demo' ? 'disabled' : ''}`}>
@@ -160,6 +195,38 @@ export const NewResearch = ({
         </label>
         <p className="stop-rule-note"><CircleAlert size={16}/> 本次调查将在“达到 {durationMinutes} 分钟”或“处理完 {maxSources} 个来源”时结束，以先发生者为准。</p>
 
+        {settings.analysis?.transport === 'proxy' && settings.analysis.loginRequired && (
+          <section className="analysis-activation-card" aria-labelledby="analysis-activation-title">
+            <span className="analysis-activation-icon"><KeyRound size={22}/></span>
+            <div className="analysis-activation-copy">
+              <strong id="analysis-activation-title">登录 Archtree 后使用 AI 分析</strong>
+              <small>使用任意普通 Archtree 账号即可。密码不会保存，OpenAI 密钥也不会进入这台电脑或 EXE。</small>
+              <div className="analysis-activation-controls">
+                <input aria-label="Archtree 邮箱或用户名" autoComplete="username" value={archtreeIdentifier} onChange={(event) => setArchtreeIdentifier(event.target.value)} placeholder="邮箱或用户名"/>
+                <input aria-label="Archtree 密码" type="password" autoComplete="current-password" value={archtreePassword} onChange={(event) => setArchtreePassword(event.target.value)} placeholder="密码"/>
+                <button type="button" disabled={authenticating || !archtreeIdentifier.trim() || !archtreePassword} onClick={() => void loginAnalysis()}>
+                  {authenticating ? <LoaderCircle className="spin" size={17}/> : <KeyRound size={17}/>} {authenticating ? '正在登录…' : '登录'}
+                </button>
+              </div>
+              {authenticationError && <p role="alert">{authenticationError}</p>}
+            </div>
+          </section>
+        )}
+
+        {settings.analysis?.transport === 'proxy' && settings.analysis.account && (
+          <section className="analysis-activation-card analysis-account-card" aria-label="Archtree 登录状态">
+            <span className="analysis-activation-icon"><CircleCheck size={22}/></span>
+            <div className="analysis-activation-copy">
+              <strong>已登录 Archtree</strong>
+              <small>{settings.analysis.account.email} · 登录有效</small>
+              <button className="analysis-logout-button" type="button" disabled={authenticating} onClick={() => void logoutAnalysis()}>
+                {authenticating ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} {authenticating ? '正在退出…' : '退出或更换账号'}
+              </button>
+              {authenticationError && <p role="alert">{authenticationError}</p>}
+            </div>
+          </section>
+        )}
+
         <section className={`chrome-connect-card chrome-connect-prominent ${chromeReady ? 'chrome-connected' : ''}`} aria-labelledby="chrome-connect-title">
           <div className="chrome-connect-heading">
             <span>{chromeReady ? <CircleCheck size={21}/> : <MonitorCog size={21}/>}</span>
@@ -185,9 +252,9 @@ export const NewResearch = ({
         </section>
 
         <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
-          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? '配置 AI 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
+          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
         </button>
-        <p className="compliance-copy">只读取公开可见页面；真实模式仅向 AI 发送去标识化的评论分析语境。</p>
+        <p className="compliance-copy">只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>
       </form>
     </main>
   );

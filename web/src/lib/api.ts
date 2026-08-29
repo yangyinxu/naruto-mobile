@@ -20,6 +20,14 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
 
 export const api = {
   settings: () => request<AppSettings>('/api/settings'),
+  loginAnalysis: (identifier: string, password: string) => request<{
+    signedIn: true;
+    account: {userId: string; email: string; role: 'admin' | 'user'};
+  }>(
+    '/api/analysis/login',
+    {method: 'POST', body: JSON.stringify({identifier, password})}
+  ),
+  logoutAnalysis: () => request<void>('/api/analysis/logout', {method: 'POST'}),
   selectDataRoot: () => request<{dataRoot: string; previousDataRoot?: string; cancelled: boolean}>(
     '/api/settings/select-data-root',
     {method: 'POST'}

@@ -2,12 +2,15 @@ import open from 'open';
 import {createApp} from './api/app';
 import {loadAppConfig} from './config';
 import {FileRunStore} from './infrastructure/fileRunStore';
+import {ArchtreeAuthService} from './services/archtreeAuth';
 import {isResearchToolRunning} from './services/existingInstance';
 import {RunManager} from './services/runManager';
 
 const config = loadAppConfig();
 const store = new FileRunStore(config.dataRoot);
-const manager = new RunManager(store, config);
+const analysisAuth = config.analysisTransport === 'proxy'
+  ? new ArchtreeAuthService({proxyBaseUrl: config.proxyBaseUrl}) : undefined;
+const manager = new RunManager(store, config, analysisAuth);
 await manager.initialize();
 
 const app = createApp(manager, config);

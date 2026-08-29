@@ -227,6 +227,9 @@ export interface AppSettings {
   dataRootLocked?: boolean;
   analysis?: {
     aiConfigured: boolean;
+    loginRequired?: boolean;
+    account?: {userId: string; email: string; role: 'admin' | 'user'};
+    transport?: 'proxy' | 'direct';
     model: string;
     reasoningEffort: string;
     liveMode: 'ai';

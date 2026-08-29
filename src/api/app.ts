@@ -45,6 +45,7 @@ export const createApp = (
 ) => {
   const openDataDirectoryPicker = dependencies.chooseDataDirectory ?? chooseDataDirectory;
   const persistDataRoot = dependencies.saveDataRoot ?? saveDataRoot;
+  const analysisTransport = () => config.analysisTransport ?? (config.openAiApiKey ? 'direct' : 'proxy');
   const app = express();
   app.disable('x-powered-by');
   app.use((_request, response, next) => {
@@ -69,7 +70,11 @@ export const createApp = (
     dataRoot: config.dataRoot,
     dataRootLocked: Boolean(process.env.RESEARCH_DATA_DIR?.trim()),
     analysis: {
-      aiConfigured: Boolean(config.openAiApiKey),
+      aiConfigured: analysisTransport() === 'proxy'
+        ? Boolean(manager.analysisAuth?.signedIn) : Boolean(config.openAiApiKey),
+      loginRequired: analysisTransport() === 'proxy' && !manager.analysisAuth?.signedIn,
+      account: manager.analysisAuth?.account,
+      transport: analysisTransport(),
       model: config.aiModel,
       reasoningEffort: config.aiReasoningEffort,
       liveMode: 'ai',
@@ -86,6 +91,29 @@ export const createApp = (
       browserWindowCount: 1,
       maxSources: 20
     }
+  }));
+  app.post('/api/analysis/login', asyncRoute(async (request, response) => {
+    if (analysisTransport() !== 'proxy') {
+      response.status(409).json({message: '当前开发配置未使用服务器分析服务。'});
+      return;
+    }
+    if (!manager.analysisAuth) {
+      response.status(409).json({message: '当前运行方式不支持 Archtree 登录。'});
+      return;
+    }
+    const account = await manager.analysisAuth.login(
+      String(request.body?.identifier ?? ''),
+      String(request.body?.password ?? '')
+    );
+    response.status(200).json({signedIn: true, account});
+  }));
+  app.post('/api/analysis/logout', asyncRoute(async (_request, response) => {
+    if (!manager.analysisAuth) {
+      response.status(204).end();
+      return;
+    }
+    await manager.analysisAuth.logout();
+    response.status(204).end();
   }));
   app.post('/api/settings/select-data-root', asyncRoute(async (_request, response) => {
     if (process.env.RESEARCH_DATA_DIR?.trim()) {
@@ -113,8 +141,12 @@ export const createApp = (
   }));
   app.post('/api/runs', asyncRoute(async (request, response) => {
     const normalized = normalizeResearchRequest(request.body);
-    if (normalized.mode === 'live' && !config.openAiApiKey) {
-      response.status(409).json({message: '真实调查需要先配置 OPENAI_API_KEY；演示模式仍可使用本地规则。'});
+    const aiReady = analysisTransport() === 'proxy'
+      ? Boolean(manager.analysisAuth?.signedIn) : Boolean(config.openAiApiKey);
+    if (normalized.mode === 'live' && !aiReady) {
+      response.status(409).json({message: analysisTransport() === 'proxy'
+        ? '真实调查需要先登录 Archtree；演示模式仍可使用本地规则。'
+        : '真实调查需要先配置 OPENAI_API_KEY；演示模式仍可使用本地规则。'});
       return;
     }
     const manifest = await manager.start(normalized);

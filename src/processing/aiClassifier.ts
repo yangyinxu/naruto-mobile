@@ -225,8 +225,31 @@ interface OpenAiResponse {
   };
 }
 
+interface ProxyResponse {
+  protocolVersion?: number;
+  kind?: 'triage' | 'detail';
+  promptVersion?: string;
+  model?: string;
+  results?: unknown[];
+  usage?: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+  };
+  code?: string;
+  message?: string;
+}
+
+export interface AiProxyOptions {
+  baseUrl: string;
+  request: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+}
+
 export interface AiClassifierOptions {
-  apiKey: string;
+  apiKey?: string;
+  proxy?: AiProxyOptions;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   batchSize?: number;
@@ -318,10 +341,12 @@ export class AiClassifier {
   private usage = emptyUsage();
 
   constructor(private readonly options: AiClassifierOptions) {
-    if (!options.apiKey.trim()) throw new Error('正式 AI 分析需要配置 OPENAI_API_KEY。');
+    if (!options.apiKey?.trim() && !options.proxy) {
+      throw new Error('正式 AI 分析需要先登录 Archtree。');
+    }
     this.model = options.model?.trim() || 'gpt-5.6-luna';
     this.reasoningEffort = options.reasoningEffort ?? 'medium';
-    this.batchSize = clamp(Math.floor(options.batchSize ?? 10), 1, 50);
+    this.batchSize = clamp(Math.floor(options.batchSize ?? 10), 1, options.proxy ? 10 : 50);
     this.concurrency = clamp(Math.floor(options.concurrency ?? 3), 1, 8);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
@@ -388,6 +413,68 @@ export class AiClassifier {
     };
   }
 
+  private async sendRequest(
+    kind: 'triage' | 'detail',
+    batch: OpinionTask[],
+    directBody: Record<string, unknown>
+  ) {
+    const usingProxy = Boolean(this.options.proxy);
+    const url = usingProxy
+      ? `${this.options.proxy!.baseUrl.replace(/\/$/, '')}/classify`
+      : 'https://api.openai.com/v1/responses';
+    const init: RequestInit = {
+      method: 'POST',
+      headers: {
+        ...(usingProxy ? {} : {authorization: `Bearer ${this.options.apiKey}`}),
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(usingProxy ? {
+        protocolVersion: 1,
+        kind,
+        batch: batch.map((item) => this.inputFor(item.opinion, item.content, item.parentText))
+      } : directBody),
+      signal: AbortSignal.timeout(usingProxy ? 115_000 : 120_000)
+    };
+    const response = usingProxy
+      ? await this.options.proxy!.request(url, init)
+      : await this.fetchImpl(url, init);
+    const value = await response.json().catch(() => ({})) as OpenAiResponse & ProxyResponse;
+    if (!response.ok) {
+      const error = new Error(
+        usingProxy
+          ? value.message || `服务器分析请求失败（HTTP ${response.status}）。`
+          : value.error?.message || `OpenAI API 请求失败（HTTP ${response.status}）。`
+      ) as Error & {retryable?: boolean; retryAfterMs?: number};
+      error.retryable = response.status === 429 || response.status >= 500;
+      const retryAfter = Number(response.headers.get('retry-after'));
+      if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1_000;
+      throw error;
+    }
+    if (usingProxy) {
+      const expectedPromptVersion = kind === 'triage' ? AI_TRIAGE_VERSION : AI_PROMPT_VERSION;
+      if (
+        value.protocolVersion !== 1
+        || value.kind !== kind
+        || value.promptVersion !== expectedPromptVersion
+        || value.model !== this.model
+        || !Array.isArray(value.results)
+      ) {
+        throw new AiBatchValidationError('服务器返回了不兼容的分析结果。');
+      }
+      return {
+        text: JSON.stringify({results: value.results}),
+        usage: {
+          input_tokens: value.usage?.inputTokens,
+          input_tokens_details: {cached_tokens: value.usage?.cachedInputTokens},
+          output_tokens: value.usage?.outputTokens,
+          output_tokens_details: {reasoning_tokens: value.usage?.reasoningTokens},
+          total_tokens: value.usage?.totalTokens
+        } satisfies OpenAiResponse['usage']
+      };
+    }
+    return {text: responseText(value), usage: value.usage};
+  }
+
   private hashInput(opinion: OpinionRecord, content: ContentRecord, parentText?: string) {
     const value = JSON.stringify({
       promptVersion: AI_PROMPT_VERSION,
@@ -424,25 +511,9 @@ export class AiClassifier {
     let lastError: unknown;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       try {
-        const response = await this.fetchImpl('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${this.options.apiKey}`,
-            'content-type': 'application/json'
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(120_000)
-        });
-        const value = await response.json() as OpenAiResponse;
-        if (!response.ok) {
-          const error = new Error(value.error?.message || `OpenAI API 请求失败（HTTP ${response.status}）。`) as Error & {retryable?: boolean; retryAfterMs?: number};
-          error.retryable = response.status === 429 || response.status >= 500;
-          const retryAfter = Number(response.headers.get('retry-after'));
-          if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1_000;
-          throw error;
-        }
+        const value = await this.sendRequest('detail', batch, body);
         this.recordUsage(value.usage);
-        const text = responseText(value);
+        const text = value.text;
         if (!text) throw new AiBatchValidationError('OpenAI API 没有返回可解析的分类结果。');
         let parsed: {results?: AiResult[]};
         try {
@@ -493,25 +564,9 @@ export class AiClassifier {
     let lastError: unknown;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       try {
-        const response = await this.fetchImpl('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${this.options.apiKey}`,
-            'content-type': 'application/json'
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(120_000)
-        });
-        const value = await response.json() as OpenAiResponse;
-        if (!response.ok) {
-          const error = new Error(value.error?.message || `OpenAI API 请求失败（HTTP ${response.status}）。`) as Error & {retryable?: boolean; retryAfterMs?: number};
-          error.retryable = response.status === 429 || response.status >= 500;
-          const retryAfter = Number(response.headers.get('retry-after'));
-          if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1_000;
-          throw error;
-        }
+        const value = await this.sendRequest('triage', batch, body);
         this.recordUsage(value.usage);
-        const text = responseText(value);
+        const text = value.text;
         if (!text) throw new AiBatchValidationError('OpenAI API 没有返回可解析的初筛结果。');
         let parsed: {results?: AiTriageResult[]};
         try {

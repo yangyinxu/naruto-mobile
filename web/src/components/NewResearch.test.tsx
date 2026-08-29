@@ -133,4 +133,45 @@ describe('NewResearch', () => {
     expect(onSelectDataRoot).toHaveBeenCalledOnce();
     expect(screen.getByText(/不会移动原文件/)).toBeVisible();
   });
+
+  it('logs into any Archtree account without exposing an OpenAI key', async () => {
+    const onLoginAnalysis = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch
+      {...chromeProps()}
+      settings={{...settings, analysis: {...settings.analysis, aiConfigured: false, loginRequired: true, transport: 'proxy'}}}
+      busy={false}
+      selectingDataRoot={false}
+      onStart={vi.fn()}
+      onSelectDataRoot={vi.fn()}
+      onLoginAnalysis={onLoginAnalysis}
+      onOpenGuide={vi.fn()}
+    />);
+    expect(screen.getByRole('button', {name: /登录 Archtree 后开始/})).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Archtree 邮箱或用户名'), {target: {value: 'friend@example.com'}});
+    fireEvent.change(screen.getByLabelText('Archtree 密码'), {target: {value: 'private-password'}});
+    fireEvent.click(screen.getByRole('button', {name: /^登录$/}));
+    await vi.waitFor(() => expect(onLoginAnalysis).toHaveBeenCalledWith('friend@example.com', 'private-password'));
+    expect(screen.queryByText(/OpenAI API 密钥/)).not.toBeInTheDocument();
+  });
+
+  it('shows the signed-in Archtree account and can log out', async () => {
+    const onLogoutAnalysis = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch
+      {...chromeProps()}
+      settings={{...settings, analysis: {
+        ...settings.analysis,
+        transport: 'proxy',
+        account: {userId: '64b000000000000000000001', email: 'friend@example.com', role: 'user'}
+      }}}
+      busy={false}
+      selectingDataRoot={false}
+      onStart={vi.fn()}
+      onSelectDataRoot={vi.fn()}
+      onLogoutAnalysis={onLogoutAnalysis}
+      onOpenGuide={vi.fn()}
+    />);
+    expect(screen.getByText('friend@example.com · 登录有效')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', {name: /退出或更换账号/}));
+    await vi.waitFor(() => expect(onLogoutAnalysis).toHaveBeenCalledOnce());
+  });
 });

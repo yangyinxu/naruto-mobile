@@ -5,10 +5,12 @@ import {AiClassificationProgress, AiClassifier} from './aiClassifier';
 import {cleanOpinions} from './cleaner';
 import {buildReport} from './reporter';
 import {RuleClassifier} from './ruleClassifier';
+import {DEFAULT_NARUTO_PROXY_BASE_URL} from '../services/archtreeAuth';
 
 interface ProcessRunOptions {
   onAiProgress?: (progress: AiClassificationProgress) => Promise<void>;
   onReporting?: () => Promise<void>;
+  analysisProxyRequest?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }
 
 /** Rebuilds every derived artifact from immutable raw JSONL. */
@@ -42,15 +44,25 @@ export const processRun = async (
     });
     classifierVersion = classifier.version;
   } else {
-    if (!config?.openAiApiKey) {
-      throw new Error('真实调查必须使用 AI 分析，但当前没有配置 OPENAI_API_KEY。');
+    const transport = config?.analysisTransport ?? (config?.openAiApiKey ? 'direct' : 'proxy');
+    const proxyReady = transport === 'proxy' && Boolean(options.analysisProxyRequest);
+    const directReady = transport === 'direct' && Boolean(config?.openAiApiKey);
+    if (!proxyReady && !directReady) {
+      throw new Error(transport === 'proxy'
+        ? '真实调查必须先登录 Archtree。'
+        : '真实调查必须先配置 OPENAI_API_KEY。');
     }
+    const activeConfig = config!;
     const classifier = new AiClassifier({
-      apiKey: config.openAiApiKey,
-      model: config.aiModel,
-      reasoningEffort: config.aiReasoningEffort,
-      batchSize: config.aiBatchSize,
-      concurrency: config.aiConcurrency
+      apiKey: transport === 'direct' ? activeConfig.openAiApiKey : undefined,
+      proxy: transport === 'proxy' && options.analysisProxyRequest ? {
+        baseUrl: activeConfig.proxyBaseUrl ?? DEFAULT_NARUTO_PROXY_BASE_URL,
+        request: options.analysisProxyRequest
+      } : undefined,
+      model: activeConfig.aiModel,
+      reasoningEffort: activeConfig.aiReasoningEffort,
+      batchSize: activeConfig.aiBatchSize,
+      concurrency: activeConfig.aiConcurrency
     });
     const cache = await store.readAiClassificationCache(manifest.id);
     let cacheWriteQueue = Promise.resolve();
