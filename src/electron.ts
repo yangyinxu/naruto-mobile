@@ -148,7 +148,7 @@ const start = async () => {
     managerConfig.analysisTransport = 'proxy';
     managerConfig.proxyBaseUrl = DEFAULT_NARUTO_PROXY_BASE_URL;
     managerConfig.openAiApiKey = undefined;
-    managerConfig.aiModel = 'gpt-5.6-luna';
+    managerConfig.aiModel = 'gpt-6-luna';
     managerConfig.aiReasoningEffort = 'medium';
   }
   const preferredUrl = `http://${managerConfig.host}:${managerConfig.port}`;

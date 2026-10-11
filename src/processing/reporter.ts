@@ -249,7 +249,9 @@ export const buildReportData = (
       usageExplanation: analysisMode === 'rule_demo'
         ? '演示模式使用本地规则，未调用 Luna，因此 Token 与模型费用均为 0。'
         : usage
-          ? 'Token 来自本次报告生成期间 OpenAI Responses API 返回的实际 usage；美元金额按记录的模型公开单价估算，实际账单可能略有差异。'
+          ? usage.stages
+            ? 'Token 来自 Decisions 初筛与 Responses 详析的实际 usage；费用分别按两阶段单价估算。Decisions 只计输入，详析区分普通输入、缓存读取、缓存写入与输出，实际账单可能略有差异。'
+            : 'Token 来自本次报告生成期间 OpenAI Responses API 返回的实际 usage；美元金额按记录的模型公开单价估算，实际账单可能略有差异。'
           : '这是一份旧版报告，当时尚未保存 API usage，因此无法可靠还原 Token 与费用。重新用 Luna 分析后即可记录。'
     },
     limitations: [
@@ -356,7 +358,15 @@ export const buildReport = (
       `- 总 Token：${usage.totalTokens.toLocaleString('zh-CN')}`,
       `- 预估费用：${cost}`
     );
-    if (usage.pricing) lines.push(`- 估算单价：输入 $${usage.pricing.inputPerMillion}/百万 Token，缓存输入 $${usage.pricing.cachedInputPerMillion}/百万 Token，输出 $${usage.pricing.outputPerMillion}/百万 Token（核对日期 ${usage.pricing.checkedAt}）`);
+    if (usage.stages) {
+      for (const [label, stage] of [['Decisions 初筛', usage.stages.triage], ['Luna 详析', usage.stages.detail]] as const) {
+        lines.push(`- ${label}：${stage.requestCount} 次调用，${stage.inputTokens.toLocaleString('zh-CN')} 输入 Token，${stage.estimatedCostUsd === undefined ? '费用未知' : '$' + stage.estimatedCostUsd.toFixed(6) + ' 美元'}`);
+      }
+    }
+    if (usage.pricing?.decisionsInputPerMillion !== undefined) {
+      lines.push(`- Decisions 初筛单价：输入 $${usage.pricing.decisionsInputPerMillion}/百万 Token，输出不收费`);
+    }
+    if (usage.pricing) lines.push(`- ${usage.stages ? 'Luna 详析单价' : '估算单价'}：输入 $${usage.pricing.inputPerMillion}/百万 Token，缓存输入 $${usage.pricing.cachedInputPerMillion}/百万 Token，输出 $${usage.pricing.outputPerMillion}/百万 Token（核对日期 ${usage.pricing.checkedAt}）`);
   } else {
     lines.push('- Token 与费用：历史报告未记录，无法可靠还原；重新用 Luna 分析后即可记录。');
   }

@@ -81,6 +81,21 @@ const run: RunManifest = {
 };
 
 describe('ReportView', () => {
+  it('shows Decisions and Luna costs separately while preserving historical usage displays', async () => {
+    apiMocks.report.mockResolvedValue('# 报告');
+    apiMocks.reportData.mockResolvedValue({...data, quality: {...data.quality, usage: {
+      ...data.quality.usage!,
+      stages: {
+        triage: {requestCount: 1, inputTokens: 1000, estimatedCostUsd: 0.0001},
+        detail: {requestCount: 1, inputTokens: 1200, estimatedCostUsd: 0.000234}
+      },
+      pricing: {...data.quality.usage!.pricing!, decisionsSourceUrl: 'https://developers.openai.com/api/docs/guides/decisions'}
+    }}});
+    render(<ReportView run={run} onBack={vi.fn()} onError={vi.fn()}/>);
+    expect(await screen.findByText('Decisions 初筛')).toBeInTheDocument();
+    expect(screen.getByText('Luna 详析')).toBeInTheDocument();
+    expect(screen.getByRole('link', {name: /查看 Decisions 初筛单价/})).toHaveAttribute('href', 'https://developers.openai.com/api/docs/guides/decisions');
+  });
   it('navigates topics, separates sentiment sections, and explains Luna usage in Chinese', async () => {
     apiMocks.report.mockResolvedValue('# 完整报告');
     apiMocks.reportData.mockResolvedValue(data);

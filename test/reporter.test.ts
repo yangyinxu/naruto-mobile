@@ -132,3 +132,20 @@ test('builds topic summaries with complete sentiment-separated evidence and Chin
   assert.match(markdown, /预估费用：约 \$0\.0009 美元/);
   assert.doesNotMatch(markdown, /```json|"analysisMode"/);
 });
+
+test('exports separate screening and detail costs without treating Decisions output as billable', () => {
+  const updatedQuality = {...quality, aiModel: 'gpt-6-luna', aiUsage: {
+    ...quality.aiUsage,
+    stages: {
+      triage: {requestCount: 1, inputTokens: 1000, estimatedCostUsd: 0.0001},
+      detail: {requestCount: 1, inputTokens: 1200, estimatedCostUsd: 0.000234}
+    },
+    pricing: {...quality.aiUsage.pricing, inputPerMillion: 0.10, cachedInputPerMillion: 0.01,
+      outputPerMillion: 0.50, decisionsInputPerMillion: 0.10}
+  }};
+  const markdown = buildReport(manifest, contents, opinions, classifications, updatedQuality);
+  assert.match(markdown, /Decisions 初筛：1 次调用，1,000 输入 Token，\$0\.000100 美元/);
+  assert.match(markdown, /Luna 详析：1 次调用，1,200 输入 Token，\$0\.000234 美元/);
+  assert.match(markdown, /Decisions 初筛单价：输入 \$0\.1\/百万 Token，输出不收费/);
+  assert.match(markdown, /Luna 详析单价/);
+});

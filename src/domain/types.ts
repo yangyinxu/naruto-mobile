@@ -19,16 +19,37 @@ export type InsightValue = 'strong' | 'weak' | 'none';
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type RunProgressPhase = 'preparing' | 'discovering' | 'collecting' | 'analyzing' | 'reporting' | 'completed';
 
+export interface AiAnalysisActivity {
+  stage: 'preparing' | 'triage' | 'detail';
+  screened: number;
+  screeningTotal: number;
+  detailed: number;
+  detailTotal: number;
+  inFlightRequests: number;
+  inFlightOpinions: number;
+  retryingRequests: number;
+  startedAt: string;
+  lastResultAt?: string;
+  oldestRequestStartedAt?: string;
+  nextRetryAt?: string;
+}
+
 export interface RunProgress {
   phase: RunProgressPhase;
   completed?: number;
   total?: number;
+  activity?: AiAnalysisActivity;
 }
 
 export interface AiTokenUsage {
+  stages?: {
+    triage: {requestCount: number; inputTokens: number; estimatedCostUsd?: number};
+    detail: {requestCount: number; inputTokens: number; estimatedCostUsd?: number};
+  };
   requestCount: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
@@ -38,6 +59,9 @@ export interface AiTokenUsage {
     inputPerMillion: number;
     cachedInputPerMillion: number;
     outputPerMillion: number;
+    cacheWriteInputPerMillion?: number;
+    decisionsInputPerMillion?: number;
+    decisionsSourceUrl?: string;
     checkedAt: string;
     sourceUrl: string;
   };

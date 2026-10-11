@@ -7,6 +7,64 @@ import {AppConfig} from '../src/config';
 import {normalizeResearchRequest} from '../src/domain/validation';
 import {FileRunStore} from '../src/infrastructure/fileRunStore';
 import {RunManager} from '../src/services/runManager';
+import {ArchtreeAuthService} from '../src/services/archtreeAuth';
+
+test('saves and broadcasts active screening before a slow provider response completes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-live-progress-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    analysisTransport: 'proxy', aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const auth = new ArchtreeAuthService();
+  auth.ensureAccess = async () => ({userId: '64b000000000000000000009', email: 'test@example.com', role: 'user'});
+  let releaseResponse!: () => void;
+  const responseGate = new Promise<void>((resolve) => {releaseResponse = resolve;});
+  let requestStarted!: () => void;
+  const requestReady = new Promise<void>((resolve) => {requestStarted = resolve;});
+  auth.request = async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).kind, 'triage');
+    requestStarted();
+    await responseGate;
+    return new Response(JSON.stringify({protocolVersion: 1, kind: 'triage', model: 'gpt-6-luna',
+      promptVersion: 'naruto-decisions-v1', results: [{opinionId: 'comment', decision: 'skip',
+        gameRelevant: true, informationType: 'content_request', reasonCode: 'content_request'}],
+      usage: {inputTokens: 100, outputTokens: 0, totalTokens: 100}}));
+  };
+  const manager = new RunManager(new FileRunStore(directory), config, auth);
+  const observed: Array<Awaited<ReturnType<RunManager['get']>>> = [];
+  const unsubscribe = manager.subscribe((manifest) => observed.push(manifest));
+  let runId: string | undefined;
+  try {
+    await manager.initialize();
+    const created = await manager.store.createRun(normalizeResearchRequest({mode: 'live', keywords: ['火影手游']}));
+    runId = created.id;
+    await manager.store.appendContent(runId, {id: 'source', type: 'video', url: 'https://example.test/video',
+      title: '火影手游', description: '', discoveryKeyword: '火影手游', discoveryRank: 1,
+      collectedAt: created.createdAt, metrics: {}});
+    await manager.store.appendOpinion(runId, {id: 'comment', contentId: 'source', contentType: 'video',
+      sourceType: 'comment', voiceType: 'viewer', text: '该出晓组织全员实战视频了',
+      collectedAt: created.createdAt, likes: 0, replies: 0, sourceUrl: 'https://example.test/video'});
+    await manager.store.updateManifest(runId, current => ({...current, state: 'paused', stopReason: 'source_exhausted',
+      counts: {...current.counts, contents: 1, sources: 1, opinions: 1}}));
+    await manager.resume(runId);
+    await requestReady;
+    const waiting = await manager.get(runId);
+    assert.equal(waiting.progress?.completed, 0);
+    assert.equal(waiting.progress?.activity?.stage, 'triage');
+    assert.equal(waiting.progress?.activity?.inFlightOpinions, 1);
+    assert.ok(observed.some(item => item.progress?.activity?.inFlightRequests === 1));
+    assert.equal((await manager.store.readAiClassificationCache(runId)).length, 0);
+    releaseResponse();
+    const finished = await waitFor(manager, runId, state => state === 'completed');
+    assert.equal(finished.reportReady, true);
+    assert.equal((await manager.store.readAiClassificationCache(runId)).length, 1);
+  } finally {
+    releaseResponse();
+    if (runId) await waitFor(manager, runId, state => state === 'completed' || state === 'failed_recoverable');
+    unsubscribe();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    await rm(directory, {recursive: true, force: true});
+  }
+});
 
 const waitFor = async (manager: RunManager, runId: string, predicate: (state: string) => boolean) => {
   const deadline = Date.now() + 8_000;
@@ -136,6 +194,100 @@ test('reports live elapsed time between persisted collection checkpoints', async
     const pausedElapsedMs = paused.activeElapsedMs;
     await new Promise((resolve) => setTimeout(resolve, 80));
     assert.equal((await manager.get(started.id)).activeElapsedMs, pausedElapsedMs);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('restores interrupted analysis and resumes cached data without Chrome or extra collection time', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-analysis-resume-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    analysisTransport: 'proxy', aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  const auth = new ArchtreeAuthService();
+  let accessChecks = 0;
+  auth.ensureAccess = async () => {
+    accessChecks += 1;
+    return {userId: '64b000000000000000000009', email: 'test@example.com', role: 'user'};
+  };
+  auth.request = async () => {assert.fail('Local hard noise and its cache must not call the provider');};
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'live', durationMinutes: 1, keywords: ['火影手游']}));
+    const content = {id: 'source', type: 'video' as const, url: 'https://www.bilibili.com/video/source',
+      title: '火影手游', description: '', discoveryKeyword: '火影手游', discoveryRank: 1,
+      collectedAt: new Date().toISOString(), metrics: {}};
+    await store.appendContent(created.id, content);
+    await store.appendOpinion(created.id, {id: 'noise', contentId: content.id, contentType: 'video',
+      sourceType: 'comment', voiceType: 'viewer', text: '12345', collectedAt: content.collectedAt,
+      likes: 0, replies: 0, sourceUrl: content.url});
+    await store.updateManifest(created.id, (current) => ({...current, state: 'processing', activeElapsedMs: 70_000,
+      stopReason: 'budget_exhausted', progress: {phase: 'analyzing', completed: 0, total: 1},
+      counts: {...current.counts, contents: 1, sources: 1, opinions: 1}}));
+    const manager = new RunManager(store, config, auth);
+    manager.chromeConnection.acquire = async () => {assert.fail('Resuming analysis must not connect Chrome');};
+    await manager.initialize();
+    const recovered = await manager.get(created.id);
+    assert.equal(recovered.state, 'paused');
+    assert.deepEqual(recovered.progress, {phase: 'analyzing', completed: 0, total: 1});
+    assert.match(recovered.statusMessage, /继续分析/);
+
+    const resumed = await manager.resume(created.id);
+    assert.equal(resumed.state, 'processing');
+    const completed = await waitFor(manager, created.id, (state) => state === 'completed');
+    assert.equal(completed.activeElapsedMs, 70_000);
+    assert.equal(completed.stopReason, 'budget_exhausted');
+    assert.equal(completed.counts.opinions, 1);
+    assert.equal((await store.readAiClassificationCache(created.id)).length, 1);
+    // Allow the worker's lock cleanup to finish before simulating the next interruption.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await store.updateManifest(created.id, (current) => ({...current, state: 'failed_recoverable', reportReady: false,
+      error: 'The analysis service is temporarily unavailable.', progress: {phase: 'analyzing', completed: 1, total: 1}}));
+    await manager.finalize(created.id);
+    const finished = await waitFor(manager, created.id, (state) => state === 'completed');
+    assert.equal(finished.stopReason, 'budget_exhausted');
+    assert.equal(finished.error, undefined);
+    assert.equal((await store.readAiClassificationCache(created.id)).length, 1);
+    assert.equal(accessChecks, 2);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('reserves report generation before authentication and rejects duplicate actions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-processing-reservation-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    analysisTransport: 'proxy', aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const auth = new ArchtreeAuthService();
+  let releaseAccess!: () => void;
+  const accessGate = new Promise<void>((resolve) => {releaseAccess = resolve;});
+  let accessEntered!: () => void;
+  const accessReady = new Promise<void>((resolve) => {accessEntered = resolve;});
+  auth.ensureAccess = async () => {
+    accessEntered();
+    await accessGate;
+    return {userId: '64b000000000000000000009', email: 'test@example.com', role: 'user'};
+  };
+  try {
+    const manager = new RunManager(new FileRunStore(directory), config, auth);
+    await manager.initialize();
+    const created = await manager.store.createRun(normalizeResearchRequest({mode: 'live', durationMinutes: 1, keywords: ['火影手游']}));
+    await manager.store.updateManifest(created.id, (current) => ({...current, state: 'failed_recoverable',
+      stopReason: 'user_finalized', progress: {phase: 'analyzing', completed: 0, total: 0}}));
+    const pending = manager.resume(created.id);
+    await accessReady;
+    await assert.rejects(manager.resume(created.id), /正在运行/);
+    await assert.rejects(manager.finalize(created.id), /正在生成报告/);
+    await assert.rejects(manager.reanalyze(created.id), /正在运行/);
+    await assert.rejects(manager.changeDataRoot(join(directory, 'other')), /正在采集或生成报告/);
+    releaseAccess();
+    assert.equal((await pending).state, 'processing');
+    const completed = await waitFor(manager, created.id, (state) => state === 'completed_early');
+    assert.equal(completed.stopReason, 'user_finalized');
+    await new Promise((resolve) => setTimeout(resolve, 40));
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

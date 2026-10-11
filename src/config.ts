@@ -54,6 +54,8 @@ export interface AppConfig {
   analysisTransport?: 'proxy' | 'direct';
   proxyBaseUrl?: string;
   openAiApiKey?: string;
+  openAiOrganizationId?: string;
+  openAiProjectId?: string;
   aiModel: string;
   aiReasoningEffort: ReasoningEffort;
   aiBatchSize: number;
@@ -102,7 +104,9 @@ export const loadAppConfig = (): AppConfig => {
     proxyBaseUrl: process.env.NARUTO_MOBILE_PROXY_BASE_URL?.trim()
       || DEFAULT_NARUTO_PROXY_BASE_URL,
     openAiApiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
-    aiModel: process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna',
+    openAiOrganizationId: process.env.OPENAI_ORG_ID?.trim() || undefined,
+    openAiProjectId: process.env.OPENAI_PROJECT_ID?.trim() || undefined,
+    aiModel: process.env.OPENAI_MODEL?.trim() || 'gpt-6-luna',
     aiReasoningEffort: reasoningEffort(process.env.OPENAI_REASONING_EFFORT),
     aiBatchSize: positiveInteger(process.env.OPENAI_BATCH_SIZE, 10),
     aiConcurrency: positiveInteger(process.env.OPENAI_CONCURRENCY, 3)

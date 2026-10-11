@@ -63,6 +63,8 @@ const opinions: OpinionRecord[] = gold.map((item) => ({
 
 const classifier = new AiClassifier({
   apiKey: config.openAiApiKey,
+  organizationId: config.openAiOrganizationId,
+  projectId: config.openAiProjectId,
   model: config.aiModel,
   reasoningEffort: config.aiReasoningEffort,
   batchSize: config.aiBatchSize,

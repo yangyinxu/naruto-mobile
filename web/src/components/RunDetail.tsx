@@ -20,6 +20,7 @@ import {api} from '../lib/api';
 import {useRunStream} from '../hooks/useRunStream';
 import {RunEvent, RunManifest, RunProgressPhase} from '../types';
 import {StatusBadge} from './StatusBadge';
+import {AnalysisLiveProgress} from './AnalysisLiveProgress';
 
 interface Props {
   initial: RunManifest;
@@ -47,8 +48,10 @@ const legacyAnalysisProgress = (statusMessage: string) => {
 
 export const getRunPhase = (run: RunManifest): RunProgressPhase => {
   if (run.reportReady || run.state === 'completed' || run.state === 'completed_early') return 'completed';
-  if (run.state === 'paused') return 'collecting';
+  if (run.stopReason && !['analyzing', 'reporting'].includes(run.progress?.phase ?? '')) return 'analyzing';
+  if (run.state === 'paused' && !run.stopReason && !['analyzing', 'reporting'].includes(run.progress?.phase ?? '')) return 'collecting';
   if (run.progress) return run.progress.phase;
+  if (run.stopReason) return 'analyzing';
   if (run.state === 'processing') return 'analyzing';
   if (run.state === 'discovering') return 'discovering';
   if (['collecting', 'pause_requested', 'paused', 'failed_recoverable'].includes(run.state)) return 'collecting';
@@ -74,7 +77,7 @@ export const getRunProgressPercent = (run: RunManifest) => {
 };
 
 export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
-  const [run, setRun] = useRunStream(initial.id, initial);
+  const [run, setRun, connection = 'connected'] = useRunStream(initial.id, initial);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -92,11 +95,13 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
   const runPhase = getRunPhase(run);
   const currentPhaseRank = phaseRank[runPhase];
   const collectionFinished = currentPhaseRank >= phaseRank.analyzing;
+  const canResume = ['paused', 'failed_recoverable'].includes(run.state);
+  const resumeAnalysis = canResume && collectionFinished && !run.reportReady;
   const displayTimeMs = collectionFinished ? run.activeElapsedMs : remainingMs;
   const progress = getRunProgressPercent(run);
   const remainingMinutes = Math.floor(displayTimeMs / 60_000);
   const remainingSeconds = Math.floor((displayTimeMs % 60_000) / 1000);
-  const isCurrentStageWorking = workingStates.has(run.state);
+  const isCurrentStageWorking = workingStates.has(run.state) && connection === 'connected';
   const stageLineProgress = Math.min(100, Math.max(0, (currentPhaseRank - phaseRank.discovering) / 3 * 100));
   const stageClass = (phase: RunProgressPhase) => currentPhaseRank > phaseRank[phase]
     ? 'done'
@@ -118,6 +123,10 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
     void action(() => api.finalize(run.id));
   };
 
+  const errorMessage = run.error === 'The analysis service is temporarily unavailable.'
+    ? 'Luna 分析服务暂时不可用。已保存原始数据和分析缓存，请稍后点击“继续分析并生成报告”。'
+    : run.error;
+
   return (
     <main className="run-page content-width">
       <button className="back-button" onClick={onBack}><ArrowLeft size={17}/> 返回历史调查</button>
@@ -126,7 +135,7 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
         <StatusBadge state={run.state} phase={runPhase} mode={run.request.mode}/>
       </section>
 
-      {run.error && <div className="error-banner"><AlertTriangle size={20}/><div><strong>调查遇到问题</strong><span>{run.error}</span></div></div>}
+      {errorMessage && <div className="error-banner"><AlertTriangle size={20}/><div><strong>{resumeAnalysis ? 'Luna 分析中断' : '调查遇到问题'}</strong><span>{errorMessage}</span></div></div>}
 
       <section className="progress-panel">
         <div className="time-display"><span>{collectionFinished ? '实际采集用时' : '剩余采集时间'}</span><strong>{String(remainingMinutes).padStart(2, '0')}<small>:</small>{String(remainingSeconds).padStart(2, '0')}</strong><em>{collectionFinished ? `${run.request.mode === 'live' ? 'Luna 分析' : '本地分析'}和报告生成不计入` : '暂停期间不计时'}</em></div>
@@ -143,6 +152,11 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
         </div>
       </section>
 
+      {runPhase === 'analyzing' && run.progress?.activity && <AnalysisLiveProgress
+        activity={run.progress.activity} working={run.state === 'processing'}
+        connection={connection} updatedAt={run.updatedAt}
+      />}
+
       <section className="metric-grid">
         <div className="metric-card"><Video/><span>已处理来源</span><strong>{run.counts.sources}</strong><small>发现 {run.counts.candidates} 个候选</small></div>
         <div className="metric-card"><MessageSquareText/><span>已收集意见</span><strong>{run.counts.opinions}</strong><small>标题与观众意见分开</small></div>
@@ -151,12 +165,12 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
       </section>
 
       <section className="control-panel">
-        <div className="control-copy"><h2>{run.reportReady ? '报告已经准备好' : run.state === 'paused' ? '调查已安全暂停' : '你可以随时控制调查'}</h2><p>{run.reportReady ? '查看网页报告，或打开本地目录获取 Markdown 和 JSONL 文件。' : '暂停会先完成当前页面并保存检查点；提前生成不会丢掉已有样本。'}</p></div>
+        <div className="control-copy"><h2>{run.reportReady ? '报告已经准备好' : resumeAnalysis ? '可以继续完成分析' : run.state === 'paused' ? '调查已安全暂停' : '你可以随时控制调查'}</h2><p>{run.reportReady ? '查看网页报告，或打开本地目录获取 Markdown 和 JSONL 文件。' : resumeAnalysis ? '继续使用已收集的意见，复用已保存的分析结果，完成后生成报告。' : '暂停会先完成当前页面并保存检查点；提前生成不会丢掉已有样本。'}</p></div>
         <div className="control-actions">
           {activeStates.has(run.state) && run.state !== 'pause_requested' && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.pause(run.id))}><Pause size={17}/>暂停</button>}
-          {['paused', 'failed_recoverable'].includes(run.state) && <button className="primary-small" disabled={busy || remainingMs <= 0} onClick={() => void action(() => api.resume(run.id))}><Play size={17}/>继续采集</button>}
-          {['paused', 'failed_recoverable'].includes(run.state) && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.extend(run.id, 5))}><Plus size={17}/>增加 5 分钟</button>}
-          {!run.reportReady && run.state !== 'processing' && <button className="danger-action" disabled={busy || run.state === 'pause_requested'} onClick={finalize}><Square size={16}/>终止并生成</button>}
+          {canResume && !run.reportReady && <button className="primary-small" disabled={busy || (!resumeAnalysis && remainingMs <= 0)} onClick={() => void action(() => api.resume(run.id))}><Play size={17}/>{resumeAnalysis ? '继续分析并生成报告' : '继续采集'}</button>}
+          {canResume && !collectionFinished && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.extend(run.id, 5))}><Plus size={17}/>增加 5 分钟</button>}
+          {!run.reportReady && run.state !== 'processing' && !resumeAnalysis && <button className="danger-action" disabled={busy || run.state === 'pause_requested'} onClick={finalize}><Square size={16}/>终止并生成</button>}
           {run.reportReady && <button className="primary-small" onClick={() => onReport(run)}><FileText size={17}/>查看调查报告</button>}
           {run.reportReady && run.request.mode === 'live' && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.reanalyze(run.id))}><RefreshCw size={17}/>重新用 Luna 分析</button>}
           <button className="secondary-action" onClick={() => void api.openFolder(run.id).catch((error) => onError(error.message))}><FolderOpen size={17}/>打开数据文件夹</button>

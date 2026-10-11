@@ -217,12 +217,17 @@ export const ReportView = ({run, onBack, onError}: {
                 <div><dt>预估费用</dt><dd>$0.00<strong>美元</strong></dd></div>
               </dl> : usage ? <dl>
                 <div><dt>API 调用</dt><dd>{number(usage.requestCount)} 次<strong>含初筛与详析</strong></dd></div>
+                {usage.stages && <>
+                  <div><dt>Decisions 初筛</dt><dd>{number(usage.stages.triage.requestCount)} 次<strong>{cost(usage.stages.triage.estimatedCostUsd)}</strong></dd></div>
+                  <div><dt>Luna 详析</dt><dd>{number(usage.stages.detail.requestCount)} 次<strong>{cost(usage.stages.detail.estimatedCostUsd)}</strong></dd></div>
+                </>}
                 <div><dt>输入</dt><dd>{number(usage.inputTokens)}<strong>缓存 {number(usage.cachedInputTokens)}</strong></dd></div>
                 <div><dt>输出</dt><dd>{number(usage.outputTokens)}<strong>推理 {number(usage.reasoningTokens)}</strong></dd></div>
                 <div><dt>总 Token</dt><dd>{number(usage.totalTokens)}<strong>输入与输出合计</strong></dd></div>
                 <div className="usage-cost"><dt>预估费用</dt><dd>{cost(usage.estimatedCostUsd)}<strong>实际账单可能略有差异</strong></dd></div>
               </dl> : <p className="legacy-usage">旧版报告没有保存 API usage，无法可靠还原。点击调查页的“重新用 Luna 分析”后即可记录。</p>}
               <p className="quality-explanation">{data.quality.usageExplanation}</p>
+              {usage?.pricing?.decisionsSourceUrl && <a className="pricing-link" href={usage.pricing.decisionsSourceUrl} target="_blank" rel="noreferrer">查看 Decisions 初筛单价<ExternalLink/></a>}
               {usage?.pricing && <a className="pricing-link" href={usage.pricing.sourceUrl} target="_blank" rel="noreferrer">查看官方单价（核对于 {usage.pricing.checkedAt}）<ExternalLink/></a>}
             </section>
             <details>

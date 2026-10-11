@@ -55,6 +55,8 @@ export const processRun = async (
     const activeConfig = config!;
     const classifier = new AiClassifier({
       apiKey: transport === 'direct' ? activeConfig.openAiApiKey : undefined,
+      organizationId: transport === 'direct' ? activeConfig.openAiOrganizationId : undefined,
+      projectId: transport === 'direct' ? activeConfig.openAiProjectId : undefined,
       proxy: transport === 'proxy' && options.analysisProxyRequest ? {
         baseUrl: activeConfig.proxyBaseUrl ?? DEFAULT_NARUTO_PROXY_BASE_URL,
         request: options.analysisProxyRequest
@@ -71,9 +73,11 @@ export const processRun = async (
       contents,
       cache,
       async (progress, records) => {
-        const write = cacheWriteQueue.then(() => store.appendAiClassificationCache(manifest.id, records));
-        cacheWriteQueue = write.catch(() => undefined);
-        await write;
+        if (records.length) {
+          const write = cacheWriteQueue.then(() => store.appendAiClassificationCache(manifest.id, records));
+          cacheWriteQueue = write.catch(() => undefined);
+          await write;
+        }
         await options.onAiProgress?.(progress);
       }
     );

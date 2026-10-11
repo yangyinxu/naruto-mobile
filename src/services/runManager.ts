@@ -10,6 +10,7 @@ import {
 } from '../domain/types';
 import {FileRunStore} from '../infrastructure/fileRunStore';
 import {processRun} from '../processing/runProcessor';
+import {AiClassificationProgress} from '../processing/aiClassifier';
 import {ArchtreeAuthService} from './archtreeAuth';
 import {ChromeConnectionService} from './chromeConnection';
 
@@ -25,6 +26,10 @@ interface ActiveRun {
 
 const activeStates = new Set<RunState>(['discovering', 'collecting', 'pause_requested', 'processing']);
 const collectionTimerStates = new Set<RunState>(['created', 'discovering', 'collecting', 'pause_requested']);
+
+const collectionStopped = (run: RunManifest) => Boolean(run.stopReason)
+  || run.progress?.phase === 'analyzing' || run.progress?.phase === 'reporting'
+  || ['processing', 'completed', 'completed_early'].includes(run.state) || run.reportReady;
 
 /** Coordinates one local collector per run and preserves cooperative pause semantics. */
 export class RunManager {
@@ -57,6 +62,16 @@ export class RunManager {
     if (!this.config.openAiApiKey) throw new Error('真实调查需要先配置 OPENAI_API_KEY。');
   }
 
+  private async updateAiProgress(runId: string, {completed, total, cached, activity}: AiClassificationProgress) {
+    const stage = activity?.stage === 'triage' ? 'Decisions 正在初筛'
+      : activity?.stage === 'detail' ? 'Luna 正在详析' : '正在准备意见分析';
+    await this.update(runId, (current) => ({
+      ...current,
+      statusMessage: `${stage} · 已完成 ${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
+      progress: {phase: 'analyzing', completed, total, activity}
+    }));
+  }
+
   async initialize() {
     await this.store.initialize();
     const manifests = await this.store.listManifests();
@@ -66,8 +81,13 @@ export class RunManager {
         ...current,
         state: 'paused',
         activeElapsedMs: Math.max(current.activeElapsedMs, checkpoint?.activeElapsedMs ?? 0),
-        statusMessage: '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。',
-        progress: {phase: 'collecting'}
+        statusMessage: collectionStopped(current)
+          ? '上次分析被关闭，原始数据和分析缓存已保留。可以继续分析并生成报告。'
+          : '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。',
+        progress: collectionStopped(current)
+          ? ['analyzing', 'reporting'].includes(current.progress?.phase ?? '')
+            ? current.progress : {phase: 'analyzing'}
+          : {phase: 'collecting'}
       }));
       await this.recordEvent(item.id, 'warning', 'run_recovered', '检测到未完成调查，已安全恢复为暂停状态。');
     }));
@@ -161,10 +181,14 @@ export class RunManager {
   }
 
   async resume(runId: string) {
+    if (this.active.has(runId) || this.backgroundProcessing.has(runId)) {
+      throw new Error('该调查正在运行，请等待当前步骤完成。');
+    }
     const manifest = await this.get(runId);
     if (!['paused', 'failed_recoverable'].includes(manifest.state)) {
       throw new Error('只有已暂停或可恢复的调查才能继续。');
     }
+    if (collectionStopped(manifest)) return this.startProcessing(runId);
     if (manifest.activeElapsedMs >= manifest.request.durationMinutes * 60_000) {
       throw new Error('采集时间已经用完，可以增加时间或直接生成报告。');
     }
@@ -193,8 +217,12 @@ export class RunManager {
   }
 
   async finalize(runId: string) {
+    if (this.backgroundProcessing.has(runId)) throw new Error('该调查正在生成报告，请等待完成。');
     const active = this.active.get(runId);
     if (active) {
+      if ((await this.get(runId)).state === 'processing') {
+        throw new Error('该调查正在生成报告，请等待完成。');
+      }
       active.directive = 'finalize';
       await this.recordEvent(runId, 'info', 'finalize_requested', '用户选择提前结束并生成报告。');
       return this.update(runId, (current) => ({
@@ -208,64 +236,60 @@ export class RunManager {
     if (!['paused', 'failed_recoverable', 'created'].includes(manifest.state)) {
       throw new Error('该调查当前不能直接生成报告。');
     }
-    void this.processAndComplete(runId, true);
-    return this.get(runId);
+    return this.startProcessing(runId, collectionStopped(manifest)
+      ? manifest.stopReason === 'user_finalized' : true);
   }
 
   async reanalyze(runId: string) {
+    return this.startProcessing(runId, undefined, true);
+  }
+
+  /** Reserve processing before any await so repeated actions cannot start competing jobs. */
+  private async startProcessing(runId: string, earlyOverride?: boolean, reanalysis = false) {
     if (this.active.has(runId) || this.backgroundProcessing.has(runId)) {
       throw new Error('该调查正在运行，请等待当前步骤完成。');
     }
-    const manifest = await this.get(runId);
-    if (manifest.request.mode === 'demo') throw new Error('演示调查继续使用本地规则，不调用 AI。');
-    const transport = this.config.analysisTransport ?? (this.config.openAiApiKey ? 'direct' : 'proxy');
-    if (transport === 'proxy' && !this.analysisAuth?.signedIn) {
-      throw new Error('重新分析需要先登录 Archtree。');
-    }
-    if (transport === 'direct' && !this.config.openAiApiKey) {
-      throw new Error('重新分析需要先配置 OPENAI_API_KEY。');
-    }
-    await this.ensureLiveAnalysisReady();
     this.backgroundProcessing.add(runId);
-    const processing = await this.update(runId, (current) => ({
-      ...current,
-      state: 'processing',
-      reportReady: false,
-      error: undefined,
-      statusMessage: `正在使用 ${this.config.aiModel} 重新筛选全部意见…`,
-      progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
-    }));
-    await this.recordEvent(runId, 'info', 'ai_reanalysis_started', '用户请求使用 Luna 重新分析已有原始数据。');
-    void this.processAndComplete(runId, manifest.stopReason === 'user_finalized', false)
-      .finally(() => this.backgroundProcessing.delete(runId));
-    return processing;
+    let release: (() => Promise<void>) | undefined;
+    try {
+      const manifest = await this.get(runId);
+      const allowed = ['created', 'paused', 'failed_recoverable', ...(reanalysis ? ['completed', 'completed_early'] : [])];
+      if (!allowed.includes(manifest.state)) throw new Error('该调查当前不能开始分析。');
+      if (reanalysis && manifest.request.mode === 'demo') throw new Error('演示调查继续使用本地规则，不调用 AI。');
+      if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
+      release = await this.store.acquireRunLock(runId);
+      const early = earlyOverride ?? (manifest.stopReason === 'user_finalized'
+        || manifest.state === 'completed_early' || !collectionStopped(manifest));
+      const processing = await this.update(runId, (current) => ({
+        ...current,
+        state: 'processing',
+        stopReason: early ? 'user_finalized' : current.stopReason,
+        reportReady: false,
+        error: undefined,
+        statusMessage: current.request.mode === 'demo' ? '正在使用本地演示规则生成报告…'
+          : '正在恢复 Luna 分析，复用已保存的结果…',
+        progress: current.progress?.phase === 'analyzing' && !current.reportReady
+          ? current.progress : {phase: 'analyzing', completed: 0, total: current.counts.opinions}
+      }));
+      await this.recordEvent(runId, 'info', reanalysis ? 'ai_reanalysis_started' : 'analysis_resumed',
+        '使用已有原始数据和分析缓存生成报告。');
+      void this.processAndComplete(runId, early, release)
+        .finally(() => this.backgroundProcessing.delete(runId));
+      return processing;
+    } catch (error) {
+      if (release) await this.fail(runId, error);
+      await release?.();
+      this.backgroundProcessing.delete(runId);
+      throw error;
+    }
   }
 
-  private async processAndComplete(runId: string, early: boolean, markProcessing = true) {
-    const release = await this.store.acquireRunLock(runId);
+  private async processAndComplete(runId: string, early: boolean, release: () => Promise<void>) {
     try {
-      let manifest = markProcessing
-        ? await this.update(runId, (current) => ({
-          ...current,
-          state: 'processing',
-          stopReason: early ? 'user_finalized' : current.stopReason,
-          statusMessage: current.request.mode === 'demo'
-            ? '正在使用本地演示规则生成报告…'
-            : `正在使用 ${this.config.aiModel} 筛选全部意见…`,
-          progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions},
-          error: undefined
-        }))
-        : await this.get(runId);
-      if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
+      let manifest = await this.get(runId);
       const result = await processRun(this.store, manifest, this.config, {
         analysisProxyRequest: this.analysisAuth?.request.bind(this.analysisAuth),
-        onAiProgress: async ({completed, total, cached}) => {
-          await this.update(runId, (current) => ({
-            ...current,
-            statusMessage: `Luna 正在分析意见：${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
-            progress: {phase: 'analyzing', completed, total}
-          }));
-        },
+        onAiProgress: (progress) => this.updateAiProgress(runId, progress),
         onReporting: async () => {
           await this.update(runId, (current) => ({
             ...current,
@@ -422,7 +446,6 @@ export class RunManager {
     const early = result.outcome === 'finalized';
     const stopReason = early ? 'user_finalized' as const
       : result.outcome === 'budget_exhausted' ? 'budget_exhausted' as const : 'source_exhausted' as const;
-    if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
     let processingManifest = await this.update(runId, (current) => ({
       ...current,
       state: 'processing',
@@ -433,15 +456,10 @@ export class RunManager {
         : `采集结束，正在使用 ${this.config.aiModel} 筛选全部意见…`,
       progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
     }));
+    if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
     const processed = await processRun(this.store, processingManifest, this.config, {
       analysisProxyRequest: this.analysisAuth?.request.bind(this.analysisAuth),
-      onAiProgress: async ({completed, total, cached}) => {
-        await this.update(runId, (current) => ({
-          ...current,
-          statusMessage: `Luna 正在分析意见：${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
-          progress: {phase: 'analyzing', completed, total}
-        }));
-      },
+      onAiProgress: (progress) => this.updateAiProgress(runId, progress),
       onReporting: async () => {
         await this.update(runId, (current) => ({
           ...current,
@@ -495,7 +513,9 @@ export class RunManager {
     await this.update(runId, (current) => ({
       ...current,
       state: 'failed_recoverable',
-      statusMessage: '调查遇到问题，现有进度已保留。可以重试或直接生成。',
+      statusMessage: collectionStopped(current)
+        ? '分析中断，原始数据和已完成的分析已保留。请稍后继续分析。'
+        : '调查遇到问题，现有进度已保留。可以重试或直接生成。',
       error: message
     })).catch(() => undefined);
   }
