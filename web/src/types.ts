@@ -74,6 +74,7 @@ export interface ResearchRequest {
 
 export interface RunManifest {
   id: string;
+  importedFrom?: {runId: string; importedAt: string};
   state: RunState;
   request: ResearchRequest;
   createdAt: string;

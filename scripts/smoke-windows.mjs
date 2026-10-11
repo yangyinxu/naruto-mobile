@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawn, execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {basename, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
@@ -137,6 +137,164 @@ const assertParallelOptions = async page => {
 
 const compact = value => value.replace(/[\s,]/gu, '');
 const assertMeaning = (actual, expected) => assert.ok(compact(actual).includes(compact(expected)), `Missing count explanation: ${expected}`);
+
+const snapshotFiles = async directory => {
+  const files = {};
+  const visit = async (current, prefix = '') => {
+    for (const entry of await readdir(current, {withFileTypes: true})) {
+      const path = join(current, entry.name);
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await visit(path, name);
+      else if (entry.isFile() && !entry.name.endsWith('.lock')) {
+        files[name] = createHash('sha256').update(await readFile(path)).digest('hex');
+      }
+    }
+  };
+  await visit(directory);
+  return files;
+};
+
+const readJsonLines = async path => (await readFile(path, 'utf8')).split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
+const withoutRunId = value => value === undefined ? undefined
+  : JSON.parse(JSON.stringify(value, (key, item) => key === 'runId' ? undefined : item));
+
+/** Round-trip a completed local fixture through the actual packaged archive API and UI. */
+const assertArchiveTransferUi = async (page, baseUrl, dataRoot, run) => {
+  const originalDirectory = join(dataRoot, 'runs', run.id);
+  const originalFiles = await snapshotFiles(originalDirectory);
+  const originalOpinions = await readJsonLines(join(originalDirectory, 'raw', 'opinions.jsonl'));
+  const originalContents = await readJsonLines(join(originalDirectory, 'raw', 'contents.jsonl'));
+  assert.equal(originalOpinions.length, 20, 'The archive fixture no longer covers all 20 demonstration records');
+  const originalReport = (await readJson(`${baseUrl}/api/runs/${run.id}/report-data`)).report;
+  await page.locator('header nav').getByRole('button', {name: /^历史调查/u}).click();
+  await page.getByRole('button', {name: '导入调查', exact: true}).waitFor({state: 'visible'});
+  assert.equal(await page.locator('.run-row').count(), 1);
+  assertMeaning(await page.locator('.archive-guide').innerText(), '原始记录、已有分析和报告');
+  assertMeaning(await page.locator('.archive-guide').innerText(), '导入和查看不需要登录或重新调用 AI');
+
+  const exportedResponse = page.waitForResponse(response => response.url() === `${baseUrl}/api/runs/${run.id}/archive`);
+  const downloadEvent = page.waitForEvent('download');
+  await page.locator('.run-row').getByRole('button', {name: `导出 ${run.request.name} 的调查 ZIP`, exact: true}).click();
+  const [response, download] = await Promise.all([exportedResponse, downloadEvent]);
+  assert.equal(response.status(), 200, 'The demonstration archive could not be exported');
+  assert.ok(response.headers()['content-type'].includes('application/zip'));
+  assert.ok(response.headers()['content-disposition'].includes('attachment'));
+  assert.ok(download.suggestedFilename().toLowerCase().endsWith('.zip'));
+  const archivePath = join(evidenceDirectory, 'demonstration-transfer.zip');
+  await download.saveAs(archivePath);
+  assert.equal(await download.failure(), null);
+  const archiveBytes = await readFile(archivePath);
+  assert.equal(archiveBytes.subarray(0, 2).toString('ascii'), 'PK');
+  assert.ok(archiveBytes.length > 100);
+
+  const importArchive = async () => {
+    const existingIds = new Set((await readJson(`${baseUrl}/api/runs`)).runs.map(item => item.id));
+    // Inspect the saved manifest and visible success after the upload. Chromium
+    // does not reliably retain file-upload response bodies in its inspector cache.
+    const importedResponse = page.waitForResponse(item => item.url() === `${baseUrl}/api/runs/import`
+      && item.request().method() === 'POST');
+    await page.getByLabel('选择调查 ZIP 文件', {exact: true}).setInputFiles(archivePath);
+    const imported = await importedResponse;
+    assert.equal(imported.status(), 201, 'The demonstration archive could not be imported without logging in');
+    assert.equal(imported.request().headers()['content-type'], 'application/zip');
+    await page.getByRole('button', {name: '查看导入调查', exact: true}).waitFor({state: 'visible'});
+    const added = (await readJson(`${baseUrl}/api/runs`)).runs.filter(item => !existingIds.has(item.id));
+    assert.equal(added.length, 1, 'Archive import did not create exactly one separate investigation');
+    const importedRun = added[0];
+    assert.equal(importedRun.importedFrom.runId, run.id);
+    assert.notEqual(importedRun.id, run.id, 'Archive import overwrote the original investigation');
+    assert.equal(importedRun.reportReady, true);
+    assert.equal(importedRun.analysis.mode, 'rule_demo');
+    assert.deepEqual(importedRun.counts, run.counts);
+    return importedRun;
+  };
+  const firstImport = await importArchive();
+  assert.equal(await page.locator('.run-row').count(), 2);
+  await page.getByRole('button', {name: '查看导入调查', exact: true}).click();
+  await page.getByLabel('报告概况').waitFor({state: 'visible'});
+  const importedReport = (await readJson(`${baseUrl}/api/runs/${firstImport.id}/report-data`)).report;
+  for (const field of ['conclusion', 'sample', 'topics', 'quality', 'limitations']) {
+    assert.deepEqual(withoutRunId(importedReport[field]), withoutRunId(originalReport[field]), `Imported report changed ${field}`);
+  }
+  assert.equal((await fetch(`${baseUrl}/api/runs/${firstImport.id}/report`)).status, 200);
+  const importedDirectory = join(dataRoot, 'runs', firstImport.id);
+  const importedOpinions = await readJsonLines(join(importedDirectory, 'raw', 'opinions.jsonl'));
+  const importedContents = await readJsonLines(join(importedDirectory, 'raw', 'contents.jsonl'));
+  assert.ok([...importedOpinions, ...importedContents].every(record => record.runId === firstImport.id), 'Imported raw records still point to the sender investigation');
+  assert.deepEqual(withoutRunId(importedOpinions), withoutRunId(originalOpinions));
+  assert.deepEqual(withoutRunId(importedContents), withoutRunId(originalContents));
+  const firstImportFiles = await snapshotFiles(importedDirectory);
+
+  await page.locator('header nav').getByRole('button', {name: /^历史调查/u}).click();
+  await page.locator('.run-row').filter({has: page.locator('.imported-run-label')}).getByRole('button', {name: '浏览完整记录', exact: true}).click();
+  await page.locator('.records-summary').getByText('共 20 条意见记录', {exact: true}).waitFor({state: 'visible'});
+  await page.locator('.record-card').last().waitFor({state: 'visible'});
+  assert.equal(await page.locator('.opinion-record').count(), originalOpinions.length);
+  assert.equal(await page.locator('.record-text').first().innerText(), originalOpinions[0].text);
+  await page.getByRole('button', {name: /^来源记录/u}).click();
+  await page.locator('.records-summary').getByText(`共 ${originalContents.length} 条来源记录`, {exact: true}).waitFor({state: 'visible'});
+  await page.locator('.content-record').last().waitFor({state: 'visible'});
+  assert.equal(await page.locator('.content-record').count(), originalContents.length);
+  await page.getByRole('button', {name: '返回历史调查', exact: true}).click();
+  const repeatedImport = await importArchive();
+  assert.notEqual(repeatedImport.id, firstImport.id, 'Repeated import overwrote an earlier imported investigation');
+  assert.equal(await page.locator('.run-row').count(), 3);
+  assert.equal((await readJson(`${baseUrl}/api/runs`)).runs.length, 3);
+
+  const screenshotFiles = [];
+  const layoutChecks = [];
+  for (const skin of ['classic', 'shinobi']) {
+    await page.getByRole('combobox', {name: '界面皮肤', exact: true}).selectOption(skin);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({width, height: 1000});
+      await page.locator(`.app-shell.skin-${skin}`).waitFor({state: 'visible'});
+      const importButton = page.getByRole('button', {name: '导入调查', exact: true});
+      assert.equal(await importButton.isVisible(), true);
+      assert.equal(await importButton.isEnabled(), true);
+      await importButton.click({trial: true});
+      const exportButtons = page.locator('.run-row .export-run');
+      assert.equal(await exportButtons.count(), 3);
+      for (const button of await exportButtons.all()) {
+        assert.equal(await button.isVisible(), true);
+        assert.equal(await button.isEnabled(), true);
+        await button.click({trial: true});
+      }
+      const dimensions = await page.evaluate(() => ({viewport: window.innerWidth, content: document.documentElement.scrollWidth}));
+      assert.ok(dimensions.content <= dimensions.viewport + 1, `${skin} archive controls overflow at ${width}px: ${dimensions.content}px`);
+      // Trial clicks scroll to each row. Return to the top so the sticky header
+      // appears in its normal position in the full-page evidence screenshot.
+      await page.evaluate(() => window.scrollTo({top: 0, left: 0, behavior: 'instant'}));
+      const filename = `archive-history-${skin}-${width}.png`;
+      await page.screenshot({path: join(evidenceDirectory, filename), fullPage: true});
+      screenshotFiles.push(filename);
+      layoutChecks.push({skin, width, buttonsVisible: true, noHorizontalOverflow: true});
+    }
+  }
+  await page.setViewportSize({width: 1440, height: 1000});
+  await page.getByRole('combobox', {name: '界面皮肤', exact: true}).selectOption('classic');
+  const invalidPath = join(isolatedRoot, 'malformed.zip');
+  await writeFile(invalidPath, 'This is not a ZIP archive.');
+  const rejectedResponse = page.waitForResponse(item => item.url() === `${baseUrl}/api/runs/import`
+    && item.request().method() === 'POST');
+  await page.getByLabel('选择调查 ZIP 文件', {exact: true}).setInputFiles(invalidPath);
+  const rejected = await rejectedResponse;
+  assert.equal(rejected.status(), 400, 'Malformed ZIP was not rejected');
+  await page.getByRole('alert').waitFor({state: 'visible'});
+  assert.match(await page.getByRole('alert').innerText(), /[\u3400-\u9fff]/u, 'Malformed archive error does not explain the failure in Chinese');
+  assert.equal(await page.locator('.run-row').count(), 3);
+  assert.equal((await readJson(`${baseUrl}/api/runs`)).runs.length, 3, 'Malformed import created a history entry');
+  assert.deepEqual(await snapshotFiles(originalDirectory), originalFiles, 'Archive transfer changed original investigation files');
+  assert.deepEqual(await snapshotFiles(importedDirectory), firstImportFiles, 'Repeated or malformed import changed an earlier imported investigation');
+  return {
+    archiveFilename: download.suggestedFilename(), archiveBytes: archiveBytes.length,
+    archiveSha256: createHash('sha256').update(archiveBytes).digest('hex'),
+    originalRunId: run.id, importedRunIds: [firstImport.id, repeatedImport.id],
+    opinionRecords: originalOpinions.length, contentRecords: originalContents.length,
+    reportAndRawRecordsPreserved: true, originalFilesUnchanged: true, earlierImportFilesUnchanged: true,
+    repeatedImportCreatesSeparateCopy: true, malformedZipRejectedWithChineseError: true,
+    noLoginRequired: true, historyCount: 3, layoutChecks, screenshotFiles
+  };
+};
 
 /** Read-only UI fixtures exercise count meanings without starting an AI investigation. */
 const assertAnalysisCountUi = async (browserInstance, baseUrl) => {
@@ -397,7 +555,7 @@ try {
   const baseUrl = `http://127.0.0.1:${ownPort}`;
   const health = await readJson(`${baseUrl}/api/health`);
   assert.equal(health.app, 'naruto-mobile-research');
-  assert.ok(health.apiVersion >= 10);
+  assert.ok(health.apiVersion >= 11);
   assert.deepEqual(await readJson(`${baseUrl}/api/runs`), {runs: []}, 'Smoke profile contains existing investigations');
 
   browser = await chromium.launch({channel: 'chrome', headless: true});
@@ -461,6 +619,7 @@ try {
   assert.ok((await report.text()).length > 100, 'Local report is empty');
   assert.deepEqual(await readJson(`${fakeUrl}/api/settings`), fakeSettings);
   assert.equal(fakeMutations, 0, 'Portable package modified the older server');
+  const archiveTransfer = await assertArchiveTransferUi(page, baseUrl, dataRoot, run);
 
   // Persist the non-default flag so a real process restart proves it was restored.
   await page.goto(baseUrl, {waitUntil: 'domcontentloaded'});
@@ -483,6 +642,8 @@ try {
   await restartedPage.goto(restartedUrl, {waitUntil: 'domcontentloaded'});
   await assertSavedKeywordsUi(restartedPage, topics, false);
   await assertParallelOptions(restartedPage);
+  const restartedRunIds = (await readJson(`${restartedUrl}/api/runs`)).runs.map(item => item.id).sort();
+  assert.deepEqual(restartedRunIds, [run.id, ...archiveTransfer.importedRunIds].sort(), 'Archive history was not restored after process restart');
   assert.ok((await restartedPage.locator('.mode-card').filter({hasText: '真实调查'}).innerText()).includes('gpt-6-luna'));
   await restartedPage.getByRole('checkbox', {name: '自动添加「火影手游」前缀'}).check();
   await saveKeywords(restartedPage, restartedUrl);
@@ -508,6 +669,7 @@ try {
     restartedPackageServerPort: restarted.port,
     parallelTabs: {default: 4, options: [4, 8], bothSelectable: true},
     countUi,
+    archiveTransfer: {...archiveTransfer, historyRestoredAfterProcessRestart: true},
     savedKeywords: saved.request.keywords,
     demonstration: {state: run.state, reportStatus: report.status, counts: run.counts, analysisMode: run.analysis.mode},
     paidApiCalls: false

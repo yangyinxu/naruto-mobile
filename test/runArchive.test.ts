@@ -1,0 +1,295 @@
+import assert from 'node:assert/strict';
+import {mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {basename, dirname, join, resolve} from 'node:path';
+import test from 'node:test';
+import {ZipFile} from 'yazl';
+import {fromBufferPromise} from 'yauzl';
+import {FileRunStore} from '../src/infrastructure/fileRunStore';
+import {AiTokenUsage, ClassificationRecord, ContentRecord, OpinionRecord} from '../src/domain/types';
+import {normalizeResearchRequest} from '../src/domain/validation';
+import {exportRunArchive, importRunArchive, RunArchiveError, MAX_SURVEY_ARCHIVE_BYTES} from '../src/services/runArchive';
+
+const time = '2026-10-11T00:00:00.000Z';
+const content: ContentRecord = {id: 'BV123', type: 'video', url: 'https://www.bilibili.com/video/BV123',
+  discoveryUrl: 'demo://popular-search/fire-ninja-mobile', title: '新忍者体验', description: '测试来源',
+  discoveryKeyword: '火影手游 新忍者', discoveryRank: 1, collectedAt: time, metrics: {likes: 5}};
+const opinion: OpinionRecord = {id: 'opinion-1', contentId: content.id, contentType: 'video',
+  sourceType: 'comment', voiceType: 'viewer', text: '二技能后摇过长，替身后无法反打', collectedAt: time,
+  authorUid: 'public-author-42', authorName: '公开玩家', authorProfileUrl: 'demo://author/1-1',
+  sourceRecordId: 'public-comment-123', likes: 3, replies: 1, sourceUrl: content.url};
+const classification: ClassificationRecord = {opinionId: opinion.id, relevanceScore: 0.95,
+  relevanceLevel: 'high', isValid: true, topics: ['决斗场体验'], topicSentiments: {'决斗场体验': 'negative'},
+  emotion: 'frustration', stance: 'complaint', severity: 4, behaviorIntents: [], playerSegment: 'unknown',
+  actionability: 'high', confidence: 0.95, classifierVersion: 'fixture-v1', matchedTerms: {},
+  analysisMode: 'ai', gameRelevant: true, insightValue: 'strong', reportEligible: true,
+  evidence: [{topic: '决斗场体验', quote: '二技能后摇过长'}], needsReview: false};
+const usage: AiTokenUsage = {requestCount: 2, inputTokens: 100, cachedInputTokens: 20, outputTokens: 30,
+  reasoningTokens: 10, totalTokens: 130, pricing: {currency: 'USD', inputPerMillion: .2,
+    cachedInputPerMillion: .02, outputPerMillion: 1.2, checkedAt: '2026-10-11',
+    sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-6-luna'}};
+
+const withStore = async (operation: (store: FileRunStore) => Promise<void>) => {
+  const root = await mkdtemp(join(tmpdir(), 'naruto-archive-'));
+  try {const store = new FileRunStore(root); await store.initialize(); await operation(store);} finally {
+    const target = resolve(root);
+    assert.equal(dirname(target), resolve(tmpdir()));
+    assert.ok(basename(target).startsWith('naruto-archive-'));
+    await rm(target, {recursive: true, force: true});
+  }
+};
+const seed = async (store: FileRunStore, completed = true) => {
+  const run = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['新忍者评价']}));
+  await store.appendContent(run.id, content);
+  await store.appendOpinion(run.id, opinion);
+  await store.writeProcessedOpinions(run.id, [{...opinion, recordSchemaVersion: 2, runId: run.id}]);
+  await store.writeClassifications(run.id, [classification]);
+  await store.writeAiClassifications(run.id, [classification]);
+  await store.appendAiClassificationCache(run.id, [{opinionId: opinion.id, inputHash: 'saved-context-hash', classification}]);
+  await store.writeQualityReport(run.id, {analysisMode: 'ai', strongOpinions: 1, validOpinions: 1,
+    generatedAt: time, aiUsage: usage});
+  await store.writeReport(run.id, '# 新忍者调查\n\n完整报告与原始来源。\n');
+  await store.writeCheckpoint(run.id, {schemaVersion: 1, pendingCandidates: [], seenContentIds: [content.id],
+    seenOpinionIds: [opinion.id], activeElapsedMs: 12_345, updatedAt: time});
+  return store.updateManifest(run.id, (current) => ({...current, state: completed ? 'completed' : 'paused',
+    createdAt: time, reportReady: completed, activeElapsedMs: 12_345,
+    counts: {candidates: 1, contents: 1, opinions: 1, validOpinions: 1, sources: 1, warnings: 0},
+    analysis: {mode: 'ai', classifierVersion: 'fixture-v1', model: 'gpt-6-luna', completedAt: time,
+      strongOpinions: 1, weakOpinions: 0, noiseOpinions: 0, usage}}));
+};
+const unzip = async (contents: Buffer) => {
+  const zip = await fromBufferPromise(contents, {lazyEntries: true, autoClose: false});
+  const result = new Map<string, Buffer>();
+  try {
+    for await (const entry of zip.eachEntry()) {
+      if (entry.fileName.endsWith('/')) continue;
+      const chunks: Buffer[] = [];
+      for await (const chunk of await zip.openReadStreamPromise(entry)) chunks.push(chunk as Buffer);
+      result.set(entry.fileName, Buffer.concat(chunks));
+    }
+    return result;
+  } finally {zip.close();}
+};
+const zipFiles = async (files: Map<string, Buffer>, options?: {symlink?: string}) => {
+  const zip = new ZipFile();
+  const chunks: Buffer[] = [];
+  const result = new Promise<Buffer>((resolveZip, reject) => {
+    zip.on('error', reject); zip.outputStream.on('error', reject);
+    zip.outputStream.on('data', (chunk) => chunks.push(chunk));
+    zip.outputStream.on('end', () => resolveZip(Buffer.concat(chunks)));
+  });
+  for (const [name, contents] of files) zip.addBuffer(contents, name, {compress: false,
+    mode: name === options?.symlink ? 0o120777 : 0o100600});
+  zip.end(); return result;
+};
+const flatArchive = async (store: FileRunStore, runId: string) => new Map(
+  [...await unzip((await exportRunArchive(store, runId)).contents)].map(([name, contents]) => [name.slice(runId.length + 1), contents])
+);
+const rejectsWithoutHistory = async (store: FileRunStore, archive: Buffer, expected: RegExp | number) => {
+  const before = (await store.listManifests()).map((run) => run.id);
+  await assert.rejects(importRunArchive(store, archive), (error: unknown) => {
+    assert.ok(error instanceof RunArchiveError);
+    if (typeof expected === 'number') assert.equal(error.statusCode, expected);
+    else assert.match(error.message, expected);
+    return true;
+  });
+  assert.deepEqual((await store.listManifests()).map((run) => run.id), before);
+  assert.equal((await readdir(store.root)).some((name) => name.startsWith('.survey-import-')), false);
+};
+
+test('ZIP roundtrip preserves the complete survey, traceability and cache while repeated imports use fresh IDs', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store);
+    await writeFile(join(store.runDirectory(original.id), '.env'), 'PRIVATE_CONFIGURATION_SHOULD_NOT_EXPORT');
+    await writeFile(join(store.runDirectory(original.id), 'manifest.json.partial.tmp'), 'temporary data');
+    const before = await readFile(join(store.runDirectory(original.id), 'manifest.json'));
+    const exported = await exportRunArchive(store, original.id);
+    assert.equal(exported.filename, `${original.request.name}-${original.id}.zip`);
+    const entries = await unzip(exported.contents);
+    assert.equal(entries.size, 11);
+    assert.ok([...entries.keys()].every((name) => name.startsWith(`${original.id}/`)));
+    assert.equal([...entries.values()].some((bytes) => bytes.includes('PRIVATE_CONFIGURATION')), false);
+    const first = await importRunArchive(store, exported.contents);
+    const second = await importRunArchive(store, exported.contents);
+    assert.notEqual(first.run.id, original.id); assert.notEqual(second.run.id, first.run.id);
+    assert.equal(first.originalRunId, original.id);
+    assert.equal(first.run.importedFrom?.runId, original.id);
+    assert.equal(first.run.createdAt, original.createdAt); assert.equal(first.run.updatedAt, original.updatedAt);
+    assert.equal(first.run.state, 'completed'); assert.equal(first.run.reportReady, true);
+    assert.deepEqual(first.run.analysis, original.analysis);
+    for (const imported of [first, second]) {
+      const raw = (await store.readOpinions(imported.run.id))[0];
+      assert.equal(raw.runId, imported.run.id); assert.equal(raw.id, opinion.id);
+      assert.equal(raw.authorUid, opinion.authorUid); assert.equal(raw.sourceRecordId, opinion.sourceRecordId);
+      assert.equal(raw.collectedAt, time);
+      assert.equal((await store.readContents(imported.run.id))[0].runId, imported.run.id);
+      assert.equal((await store.readProcessedOpinions(imported.run.id))[0].runId, imported.run.id);
+      assert.deepEqual(await store.readAiClassificationCache(imported.run.id),
+        [{opinionId: opinion.id, inputHash: 'saved-context-hash', classification}]);
+      assert.equal(await store.readReport(imported.run.id), await store.readReport(original.id));
+      assert.equal((await store.readEvents(imported.run.id)).at(-1)?.type, 'run_imported');
+    }
+    assert.deepEqual(await readFile(join(store.runDirectory(original.id), 'manifest.json')), before);
+    assert.equal((await store.listManifests()).length, 3);
+  });
+});
+
+test('manually zipped root files and one named folder import safely; unfinished states become paused', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store, false);
+    const files = await flatArchive(store, original.id);
+    for (const state of ['created', 'processing', 'collecting', 'discovering', 'pause_requested']) {
+      const manifest = JSON.parse(files.get('manifest.json')!.toString()) as Record<string, unknown>;
+      manifest.state = state; manifest.progress = {phase: 'analyzing', activity: {inFlightRequests: 12}};
+      files.set('manifest.json', Buffer.from(JSON.stringify(manifest)));
+      const zipped = state === 'processing' ? new Map([...files].map(([name, bytes]) => [`朋友发来的调查/${name}`, bytes])) : files;
+      const imported = await importRunArchive(store, await zipFiles(zipped));
+      assert.equal(imported.run.state, 'paused'); assert.equal(imported.run.reportReady, false);
+      assert.equal(imported.run.progress?.activity, undefined);
+      assert.equal((await store.readCheckpoint(imported.run.id)).seenOpinionIds[0], opinion.id);
+    }
+  });
+});
+
+test('export refuses active states and existing leases, then releases its lease on failure and success', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store, false);
+    await store.updateManifest(original.id, (current) => ({...current, state: 'processing'}));
+    await assert.rejects(exportRunArchive(store, original.id), (error: RunArchiveError) => error.statusCode === 409);
+    assert.equal((await readdir(store.runDirectory(original.id))).includes('.active.lock'), false);
+    await store.updateManifest(original.id, (current) => ({...current, state: 'paused'}));
+    const release = await store.acquireRunLock(original.id);
+    try {await assert.rejects(exportRunArchive(store, original.id), (error: RunArchiveError) => error.statusCode === 409);} finally {await release();}
+    await exportRunArchive(store, original.id);
+    assert.equal((await readdir(store.runDirectory(original.id))).includes('.active.lock'), false);
+  });
+});
+
+test('a paused survey extended past the initial 720-minute form limit remains transferable', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store, false);
+    await store.updateManifest(original.id, (current) => ({...current,
+      request: {...current.request, durationMinutes: 725}}));
+    const imported = await importRunArchive(store, (await exportRunArchive(store, original.id)).contents);
+    assert.equal(imported.run.request.durationMinutes, 725);
+    assert.equal(imported.run.state, 'paused');
+  });
+});
+
+test('legacy requests without a browser window count import from root files or one folder with the current default', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store, false);
+    const files = await flatArchive(store, original.id);
+    const manifest = JSON.parse(files.get('manifest.json')!.toString());
+    delete manifest.request.browserWindowCount;
+    files.set('manifest.json', Buffer.from(JSON.stringify(manifest)));
+    for (const prefix of ['', '旧调查/']) {
+      const archived = new Map([...files].map(([name, contents]) => [`${prefix}${name}`, contents]));
+      const imported = await importRunArchive(store, await zipFiles(archived));
+      assert.equal(imported.run.request.browserWindowCount, 4);
+      assert.equal(imported.run.request.durationMinutes, original.request.durationMinutes);
+      assert.deepEqual(imported.run.request.keywords, original.request.keywords);
+      assert.equal(imported.run.state, 'paused');
+    }
+    manifest.request.browserWindowCount = 9;
+    files.set('manifest.json', Buffer.from(JSON.stringify(manifest)));
+    await rejectsWithoutHistory(store, await zipFiles(files), /调查设置/);
+  });
+});
+
+test('invalid ZIP bytes, CRC damage and declared expansion limits reject without partial history', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store);
+    await rejectsWithoutHistory(store, Buffer.from('not a zip'), /无法读取/);
+    const flat = await flatArchive(store, original.id);
+    const archive = await zipFiles(flat);
+    const badCrc = Buffer.from(archive);
+    const central = badCrc.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    assert.ok(central >= 0);
+    badCrc.writeUInt32LE((badCrc.readUInt32LE(central + 16) ^ 1) >>> 0, central + 16);
+    await rejectsWithoutHistory(store, badCrc, /CRC/);
+    const oversized = Buffer.from(archive);
+    oversized.writeUInt32LE(129 * 1024 * 1024, central + 24);
+    oversized.writeUInt16LE(8, central + 10);
+    await rejectsWithoutHistory(store, oversized, 413);
+    const totalExpansion = Buffer.from(archive);
+    let position = central;
+    for (let count = 0; count < 5; count += 1) {
+      assert.ok(position >= 0);
+      totalExpansion.writeUInt32LE(128 * 1024 * 1024, position + 24);
+      totalExpansion.writeUInt16LE(8, position + 10);
+      position = totalExpansion.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), position + 4);
+    }
+    await rejectsWithoutHistory(store, totalExpansion, 413);
+    await rejectsWithoutHistory(store, Buffer.alloc(MAX_SURVEY_ARCHIVE_BYTES + 1), 413);
+  });
+});
+
+test('unknown files, multiple surveys, duplicate paths, traversal and ZIP symlinks are rejected atomically', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store);
+    const files = await flatArchive(store, original.id);
+    const extra = new Map(files); extra.set('.env', Buffer.from('credential'));
+    await rejectsWithoutHistory(store, await zipFiles(extra), /不支持的文件/);
+    const multiple = new Map([...files, ...[...files].map(([name, contents]) => [`second/${name}`, contents] as [string, Buffer])]);
+    await rejectsWithoutHistory(store, await zipFiles(multiple), /仅包含一份/);
+    const zip = new ZipFile(); const chunks: Buffer[] = [];
+    const duplicate = new Promise<Buffer>((resolveZip) => {zip.outputStream.on('data', (chunk) => chunks.push(chunk));
+      zip.outputStream.on('end', () => resolveZip(Buffer.concat(chunks)));});
+    zip.addBuffer(files.get('manifest.json')!, 'manifest.json'); zip.addBuffer(files.get('manifest.json')!, 'manifest.json'); zip.end();
+    await rejectsWithoutHistory(store, await duplicate, /重复/);
+    const prefixed = await zipFiles(new Map([...files].map(([name, contents]) => [`xx/${name}`, contents])));
+    const traversal = Buffer.from(prefixed);
+    for (let offset = traversal.indexOf('xx/manifest.json'); offset !== -1; offset = traversal.indexOf('xx/manifest.json', offset + 1)) traversal.write('../manifest.json', offset);
+    await rejectsWithoutHistory(store, traversal, /无法读取|文件路径/);
+    await rejectsWithoutHistory(store, await zipFiles(files, {symlink: 'raw/opinions.jsonl'}), /符号链接/);
+  });
+});
+
+test('malformed record schemas, unsafe source links and missing completed report data leave no imported history', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store);
+    const files = await flatArchive(store, original.id);
+    const badTopics = new Map(files);
+    badTopics.set('processed/classifications.jsonl', Buffer.from(`${JSON.stringify({...classification, topics: 'not-an-array'})}\n`));
+    await rejectsWithoutHistory(store, await zipFiles(badTopics), /classifications/);
+    for (const inheritedKey of ['constructor', '__proto__', 'toString']) {
+      const inheritedSentiment = new Map(files);
+      inheritedSentiment.set('processed/classifications.jsonl', Buffer.from(`${JSON.stringify({...classification,
+        topics: [inheritedKey], topicSentiments: {}})}\n`));
+      await rejectsWithoutHistory(store, await zipFiles(inheritedSentiment), /classifications/);
+    }
+    const invalidQuality = new Map(files);
+    invalidQuality.set('processed/quality-report.json', Buffer.from(JSON.stringify({validOpinions: {toString: null, valueOf: null}})));
+    await rejectsWithoutHistory(store, await zipFiles(invalidQuality), /质量报告/);
+    const unsafeLink = new Map(files);
+    unsafeLink.set('raw/opinions.jsonl', Buffer.from(`${JSON.stringify({...opinion, sourceUrl: 'javascript:alert(1)'})}\n`));
+    await rejectsWithoutHistory(store, await zipFiles(unsafeLink), /opinions/);
+    const missingReport = new Map(files); missingReport.delete('reports/report.md');
+    await rejectsWithoutHistory(store, await zipFiles(missingReport), /缺少报告/);
+    const invalidJson = new Map(files); invalidJson.set('checkpoint.json', Buffer.from('{'));
+    await rejectsWithoutHistory(store, await zipFiles(invalidJson), /checkpoint/);
+    const partialLine = new Map(files); partialLine.set('events.jsonl', Buffer.from('{"message":"truncated"'));
+    await rejectsWithoutHistory(store, await zipFiles(partialLine), /events/);
+    const foreignPending = new Map(files);
+    const checkpoint = JSON.parse(foreignPending.get('checkpoint.json')!.toString());
+    checkpoint.pendingCandidates = [{...content, url: 'http://127.0.0.1/admin'}];
+    foreignPending.set('checkpoint.json', Buffer.from(JSON.stringify(checkpoint)));
+    await rejectsWithoutHistory(store, await zipFiles(foreignPending), /B 站公开页面/);
+  });
+});
+
+test('export cannot traverse a symlinked data directory or share an unrelated target file', async () => {
+  await withStore(async (store) => {
+    const original = await seed(store, false);
+    const outside = join(store.root, 'unrelated'); await mkdir(outside);
+    await writeFile(join(outside, 'report.md'), 'unrelated file');
+    const reportDirectory = join(store.runDirectory(original.id), 'reports');
+    assert.equal(dirname(resolve(reportDirectory)), resolve(store.runDirectory(original.id)));
+    await rm(reportDirectory, {recursive: true});
+    await symlink(outside, reportDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(exportRunArchive(store, original.id), /符号链接/);
+    assert.equal((await readdir(store.runDirectory(original.id))).includes('.active.lock'), false);
+    assert.equal(await readFile(join(outside, 'report.md'), 'utf8'), 'unrelated file');
+  });
+});

@@ -10,6 +10,7 @@ import {chooseDataDirectory} from '../services/dataDirectoryPicker';
 import {readSavedKeywords, saveDataRoot, saveKeywords} from '../services/dataRootSettings';
 import {RESEARCH_API_VERSION, RESEARCH_APP_ID} from '../services/existingInstance';
 import {RunManager} from '../services/runManager';
+import {MAX_SURVEY_ARCHIVE_BYTES, RunArchiveError} from '../services/runArchive';
 
 const asyncRoute = (
   handler: (request: Request, response: Response, next: NextFunction) => Promise<void>
@@ -151,6 +152,20 @@ export const createApp = (
   }));
   app.get('/api/runs', asyncRoute(async (_request, response) => {
     response.json({runs: await manager.list()});
+  }));
+  app.post('/api/runs/import', express.raw({
+    type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'],
+    limit: MAX_SURVEY_ARCHIVE_BYTES
+  }), asyncRoute(async (request, response) => {
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+      throw new RunArchiveError('请选择包含一次调查记录的 ZIP 压缩包。', 400);
+    }
+    response.status(201).json(await manager.importArchive(request.body));
+  }));
+  app.get('/api/runs/:runId/archive', asyncRoute(async (request, response) => {
+    const archive = await manager.exportArchive(request.params.runId);
+    response.set('Cache-Control', 'no-store');
+    response.attachment(archive.filename).type('application/zip').send(archive.contents);
   }));
   app.post('/api/runs', asyncRoute(async (request, response) => {
     const normalized = normalizeResearchRequest(request.body);
@@ -334,7 +349,9 @@ export const createApp = (
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     const status = error instanceof RequestValidationError ? error.statusCode
       : (error as {statusCode?: number})?.statusCode ?? 500;
-    const message = error instanceof Error ? error.message : '发生未知错误。';
+    const message = (error as {type?: string})?.type === 'entity.too.large'
+      ? '文件过大，调查 ZIP 压缩包不能超过 128 MiB。'
+      : error instanceof Error ? error.message : '发生未知错误。';
     response.status(status).json({message});
   });
   return app;

@@ -94,6 +94,12 @@ export default function App() {
     void api.openFolder(run.id).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   };
 
+  const importRun = async (file: File) => {
+    const run = await api.importRun(file);
+    setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
+    return run;
+  };
+
   const openChromeSettings = async () => {
     setError('');
     try {
@@ -204,7 +210,7 @@ export default function App() {
         <ChromeGuide chromeSettingsSupported={(settings.apiVersion ?? 0) >= 6} chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onOpenChromeSettings={openChromeSettings} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'history' && (
-        <History runs={runs} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder}/>
+        <History runs={runs} archiveSupported={(settings.apiVersion ?? 0) >= 11} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder} onImport={importRun} onExport={(run) => api.exportRun(run.id)}/>
       )}
       {view === 'run' && selected && (
         <RunDetail initial={selected} onBack={() => {void loadRuns(); setView('history');}} onReport={(run) => {setSelected(run); setView('report');}} onError={setError}/>

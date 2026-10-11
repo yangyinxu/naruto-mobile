@@ -166,6 +166,24 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .page-title { display: flex; justify-content: space-between; align-items: end; margin-bottom: 30px; }
 .page-title h1 { font-family: "STZhongsong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", Georgia, serif; font-size: 42px; font-weight: 500; margin: 10px 0 7px; }
 .page-title p { color: var(--muted); margin: 0; font-size: 13px; }
+.history-title { align-items: center; gap: 20px; }
+.history-title > div { min-width: 0; }
+.history-title p { max-width: 800px; line-height: 1.7; }
+.history-import-button { flex: 0 0 auto; min-height: 44px; white-space: nowrap; }
+.history-file-input { display: none; }
+.archive-guide { display: flex; align-items: flex-start; gap: 12px; padding: 17px 19px; margin: -6px 0 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--muted); }
+.archive-guide > svg { flex: 0 0 auto; margin-top: 2px; color: var(--orange-dark); }
+.archive-guide strong { color: var(--ink); font-size: 15px; }
+.archive-guide p { margin: 5px 0 0; font-size: 13px; line-height: 1.75; }
+.archive-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 16px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--paper); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+.archive-notice > span { min-width: 0; flex: 1 1 320px; }
+.archive-notice > svg { flex: 0 0 auto; }
+.archive-success { border-color: #b5d7c5; color: #25684d; background: #eff8f3; }
+.archive-error { border-color: #e5b7ad; color: #9c382d; background: #fff2ef; }
+.archive-notice .secondary-action { font-size: 13px; }
+.archive-spinner { animation: archive-spin 1s linear infinite; }
+@keyframes archive-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .archive-spinner { animation: none; } }
 .empty-state { min-height: 360px; display: grid; place-items: center; align-content: center; text-align: center; border: 1px dashed #cfc6b7; border-radius: 20px; color: #948a7d; }
 .empty-state h2 { color: #544e45; font-size: 17px; margin: 15px 0 4px; }
 .empty-state p { margin: 0; font-size: 11px; }
@@ -173,7 +191,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .run-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border: 1px solid #ded6ca; border-radius: 15px; background: rgba(255,253,248,.82); color: var(--ink); transition: .18s; overflow: hidden; }
 .run-row:hover { border-color: #c7b8a5; transform: translateY(-1px); box-shadow: 0 10px 30px rgba(65, 52, 35, .06); }
 .run-overview { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto 90px; gap: 18px; align-items: center; padding: 18px 21px; border: 0; background: transparent; text-align: left; color: var(--ink); }
-.run-record-actions { padding: 12px; border-left: 1px solid #e4ddd2; display: flex; align-items: center; gap: 7px; background: rgba(249,245,238,.72); }
+.run-record-actions { padding: 12px; border-left: 1px solid #e4ddd2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; background: rgba(249,245,238,.72); }
+.run-record-buttons { display: flex; align-items: center; gap: 7px; }
+.archive-active-note { max-width: 300px; color: var(--muted); font-size: 11px; line-height: 1.6; text-align: right; }
+.imported-run-label { display: block; margin-top: 5px; color: var(--orange-dark); font-size: 11px; }
 .run-record-actions button { min-height: 40px; border: 1px solid #d8d0c3; border-radius: 10px; padding: 9px 10px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: #5c5449; background: #fffdf8; font-weight: 750; white-space: nowrap; }
 .run-record-actions .browse-records { color: #9a3f1e; border-color: #e3c0af; background: #fff6ef; }
 .run-icon { width: 42px; height: 42px; border-radius: 12px; background: #f2eadd; display: grid; place-items: center; color: var(--orange-dark); }
@@ -430,6 +451,12 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
   .run-overview { grid-template-columns: auto 1fr; }
   .run-count { display: none; }
   .run-record-actions { justify-content: stretch; }
+  .history-title { align-items: stretch; flex-direction: column; }
+  .history-import-button { width: 100%; }
+  .run-record-buttons { width: 100%; flex-wrap: wrap; }
+  .run-record-buttons .export-run { flex: 1; }
+  .archive-active-note { max-width: none; width: 100%; text-align: left; }
+  .archive-guide { padding: 14px; }
   .run-record-actions .browse-records { flex: 1; }
   .records-header { align-items: stretch; flex-direction: column; }
   .records-header h1 { font-size: 31px; }

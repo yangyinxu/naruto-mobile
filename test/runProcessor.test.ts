@@ -64,21 +64,52 @@ const seedRun = async (store: FileRunStore, mode: 'live' | 'demo') => {
 
 const waitForCompleted = async (manager: RunManager, runId: string) => {
   const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const manifest = await manager.get(runId);
-    assert.notEqual(manifest.state, 'failed_recoverable', manifest.error);
-    if (manifest.reportReady && ['completed', 'completed_early'].includes(manifest.state)) {
+  let acceptManifest!: (manifest: RunManifest) => void;
+  let rejectCompletion!: (error: unknown) => void;
+  let failure: unknown;
+  const completion = new Promise<RunManifest>((resolveComplete, rejectComplete) => {
+    rejectCompletion = rejectComplete;
+    acceptManifest = (manifest) => {
+      if (manifest.id !== runId) return;
+      try {
+        assert.notEqual(manifest.state, 'failed_recoverable', manifest.error);
+      } catch (error) {
+        failure = error;
+        rejectComplete(error);
+        return;
+      }
+      if (manifest.reportReady && ['completed', 'completed_early'].includes(manifest.state)) resolveComplete(manifest);
+    };
+  });
+  // Subscribe before the initial read so a fast all-cache run cannot complete between them.
+  const unsubscribe = manager.subscribe(acceptManifest);
+  const timer = setTimeout(() => {
+    failure = new Error('Timed out waiting for the final manifest and run-lock release.');
+    rejectCompletion(failure);
+  }, 5_000);
+  void completion.catch(() => undefined);
+  try {
+    // Progress events already provide every manifest update. Repeated readFile polling would
+    // contend with atomic renames on Windows and manufacture failures unrelated to counts.
+    acceptManifest(await manager.get(runId));
+    const manifest = await completion;
+    while (Date.now() < deadline) {
+      if (failure) throw failure;
       try {
         await stat(join(manager.store.runDirectory(runId), '.active.lock'));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+        if (failure) throw failure;
         return manifest;
       }
+      await new Promise((resolveTurn) => setTimeout(resolveTurn, 40));
     }
-    await new Promise((resolveTurn) => setTimeout(resolveTurn, 10));
+    throw new Error('Timed out waiting for run-lock release.');
+  } finally {
+    clearTimeout(timer);
+    unsubscribe();
   }
-  throw new Error('Timed out waiting for final manifest and run-lock release.');
 };
 
 const checkFinalCounts = async (

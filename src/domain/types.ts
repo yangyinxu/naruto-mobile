@@ -100,6 +100,7 @@ export interface RunCounts {
 export interface RunManifest {
   schemaVersion: 1;
   id: string;
+  importedFrom?: {runId: string; importedAt: string};
   state: RunState;
   request: ResearchRequest;
   createdAt: string;

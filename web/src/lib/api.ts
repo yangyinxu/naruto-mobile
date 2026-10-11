@@ -19,6 +19,22 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   return value as T;
 };
 
+const archiveError = async (response: Response, fallback: string): Promise<Error> => {
+  const value = await response.json().catch(() => ({})) as {message?: unknown};
+  return new Error(typeof value.message === 'string' && value.message ? value.message : fallback);
+};
+
+const archiveFilename = (header: string | null): string => {
+  let name = '';
+  const utf8 = header?.match(/filename\*\s*=\s*UTF-8'[^']*'([^;]+)/i)?.[1];
+  if (utf8) {
+    try { name = decodeURIComponent(utf8.trim().replace(/^"|"$/g, '')); } catch { /* Use the plain filename or fallback. */ }
+  }
+  if (!name) name = header?.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i)?.slice(1).find(Boolean)?.trim() || '调查记录.zip';
+  name = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[.\s]+$/g, '');
+  return name.toLowerCase().endsWith('.zip') ? name : `${name || '调查记录'}.zip`;
+};
+
 export const api = {
   settings: () => request<AppSettings>('/api/settings'),
   saveKeywords: (settings: KeywordSettings) => request<KeywordSettings>('/api/settings/keywords', {
@@ -37,6 +53,32 @@ export const api = {
     {method: 'POST'}
   ),
   listRuns: async () => (await request<{runs: RunManifest[]}>('/api/runs')).runs,
+  importRun: async (file: File): Promise<RunManifest> => {
+    const response = await fetch('/api/runs/import', {
+      method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file
+    });
+    if (!response.ok) throw await archiveError(response, '导入失败，请选择本工具导出的调查 ZIP 文件。');
+    const value = await response.json() as {run: RunManifest; originalRunId: string};
+    return value.run;
+  },
+  exportRun: async (id: string): Promise<void> => {
+    const response = await fetch(`/api/runs/${encodeURIComponent(id)}/archive`);
+    if (!response.ok) throw await archiveError(response, '导出失败，请稍后重试。');
+    const blob = await response.blob();
+    if (!blob.size) throw new Error('导出的压缩包为空，请稍后重试。');
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = archiveFilename(response.headers.get('Content-Disposition'));
+    document.body.appendChild(anchor);
+    try {
+      anchor.click();
+    } finally {
+      anchor.remove();
+      // Keep the blob available while Chromium hands the download to its save dialog.
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+  },
   runDetail: (id: string) => request<{run: RunManifest; events: RunEvent[]}>(`/api/runs/${id}`),
   runRecords: (
     id: string,

@@ -798,6 +798,22 @@ html[data-skin="shinobi"] body {
   background: rgba(160, 56, 44, .08);
 }
 
+.skin-shinobi .archive-guide,
+.skin-shinobi .archive-notice {
+  border-radius: 0;
+  border-color: rgba(23, 23, 24, .3);
+  color: var(--shinobi-muted);
+  background: rgba(255, 255, 255, .18);
+}
+
+.skin-shinobi .archive-guide strong { color: #302d2b; }
+.skin-shinobi .archive-guide > svg,
+.skin-shinobi .imported-run-label { color: #7f2b23; }
+.skin-shinobi .archive-success { color: #25684d; border-color: rgba(37, 104, 77, .4); }
+.skin-shinobi .archive-error { color: #7f2b23; border-color: rgba(127, 43, 35, .4); }
+.skin-shinobi .archive-active-note { color: var(--shinobi-muted); }
+.skin-shinobi .archive-notice .secondary-action { color: #302d2b; background: rgba(255, 255, 255, .18); }
+
 .skin-shinobi .status,
 .skin-shinobi .record-kind,
 .skin-shinobi .record-tabs button b {

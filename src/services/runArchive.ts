@@ -1,0 +1,521 @@
+import {randomUUID} from 'node:crypto';
+import {lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {basename, dirname, join, resolve} from 'node:path';
+import {Readable} from 'node:stream';
+import {crc32} from 'node:zlib';
+import {fromBufferPromise, Entry, ZipFile as ReadZip} from 'yauzl';
+import {ZipFile as WriteZip} from 'yazl';
+import {FileRunStore, RunAlreadyActiveError} from '../infrastructure/fileRunStore';
+import {RunManifest, runStates} from '../domain/types';
+import {normalizeResearchRequest} from '../domain/validation';
+
+export const MAX_SURVEY_ARCHIVE_BYTES = 128 * 1024 * 1024;
+export const MAX_SURVEY_EXPANDED_BYTES = 512 * 1024 * 1024;
+const MAX_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_LINE_BYTES = 1024 * 1024;
+const MAX_RECORDS = 200_000;
+const runIdPattern = /^\d{8}T\d{6}-[a-f0-9]{8}$/;
+const transferableStates = new Set(['created', 'paused', 'failed_recoverable', 'completed', 'completed_early']);
+const files = [
+  'manifest.json', 'checkpoint.json', 'events.jsonl',
+  'raw/contents.jsonl', 'raw/opinions.jsonl',
+  'processed/opinions.jsonl', 'processed/classifications.jsonl',
+  'processed/ai-classifications.jsonl', 'processed/ai-cache.jsonl',
+  'processed/quality-report.json', 'reports/report.md'
+] as const;
+const allowedFiles = new Set<string>(files);
+const directories = new Set(['raw', 'processed', 'reports']);
+const reportFiles = ['raw/contents.jsonl', 'raw/opinions.jsonl', 'processed/opinions.jsonl',
+  'processed/classifications.jsonl', 'processed/quality-report.json', 'reports/report.md'];
+type JsonObject = Record<string, unknown>;
+
+export class RunArchiveError extends Error {
+  constructor(message: string, readonly statusCode = 400) {
+    super(message);
+    this.name = 'RunArchiveError';
+  }
+}
+
+const invalid = (label: string): never => {throw new RunArchiveError(`调查压缩包中的${label}格式不正确。`);};
+const object = (value: unknown, label: string): JsonObject => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(label);
+  return value as JsonObject;
+};
+const string = (value: unknown, label: string, maximum = 100_000): string => {
+  if (typeof value !== 'string' || value.length > maximum) invalid(label);
+  return value as string;
+};
+const id = (value: unknown, label: string) => {
+  const result = string(value, label, 512);
+  if (!result || /[\u0000-\u001f]/.test(result)) invalid(label);
+  return result;
+};
+const number = (value: unknown, label: string, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) invalid(label);
+};
+const integer = (value: unknown, label: string) => {
+  number(value, label);
+  if (!Number.isSafeInteger(value)) invalid(label);
+};
+const boolean = (value: unknown, label: string) => {if (typeof value !== 'boolean') invalid(label);};
+const oneOf = (value: unknown, choices: readonly string[], label: string) => {
+  if (typeof value !== 'string' || !choices.includes(value)) invalid(label);
+};
+const stringArray = (value: unknown, label: string, maximum = MAX_RECORDS) => {
+  if (!Array.isArray(value) || value.length > maximum) invalid(label);
+  for (const item of value as unknown[]) string(item, label, 10_000);
+};
+const date = (value: unknown, label: string) => {
+  const result = string(value, label, 64);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(result) || !Number.isFinite(Date.parse(result))) invalid(label);
+};
+const url = (value: unknown, label: string) => {
+  const source = string(value, label, 16_384);
+  try {
+    const parsed = new URL(source);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) invalid(label);
+  } catch {invalid(label);}
+};
+const metadataUrl = (value: unknown, label: string) => {
+  const source = string(value, label, 16_384);
+  if (/^demo:\/\/(author|popular-search)\/[\w/-]+$/.test(source)) return;
+  url(source, label);
+};
+const optional = (value: JsonObject, fields: string[], check: (item: unknown, label: string) => void, label: string) => {
+  for (const key of fields) if (value[key] !== undefined) check(value[key], `${label}.${key}`);
+};
+
+// Reject non-finite JSON numbers and excessive nesting before any data reaches the UI or processor.
+const validateJsonTree = (value: unknown, label: string, depth = 0): void => {
+  if (depth > 24) invalid(label);
+  if (typeof value === 'number' && !Number.isFinite(value)) invalid(label);
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) validateJsonTree(child, label, depth + 1);
+  }
+};
+const decode = (contents: Buffer, label: string) => {
+  try {return new TextDecoder('utf-8', {fatal: true}).decode(contents);} catch {return invalid(label);}
+};
+const parseJson = (contents: Buffer, label: string) => {
+  if (contents.length > MAX_JSON_BYTES) throw new RunArchiveError(`${label}超过 2 MiB 的限制。`, 413);
+  try {
+    const parsed: unknown = JSON.parse(decode(contents, label));
+    validateJsonTree(parsed, label);
+    return parsed;
+  } catch (error) {
+    if (error instanceof RunArchiveError) throw error;
+    return invalid(label);
+  }
+};
+const validateUsage = (value: unknown, label: string) => {
+  const usage = object(value, label);
+  for (const key of ['requestCount', 'inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens']) {
+    integer(usage[key], `${label}.${key}`);
+  }
+  optional(usage, ['cacheWriteInputTokens'], integer, label);
+  optional(usage, ['estimatedCostUsd'], number, label);
+  if (usage.stages !== undefined) {
+    const stages = object(usage.stages, `${label}.stages`);
+    for (const stage of ['triage', 'detail']) {
+      const item = object(stages[stage], `${label}.stages.${stage}`);
+      integer(item.requestCount, label); integer(item.inputTokens, label);
+      optional(item, ['estimatedCostUsd'], number, label);
+    }
+  }
+  if (usage.pricing !== undefined) {
+    const pricing = object(usage.pricing, `${label}.pricing`);
+    oneOf(pricing.currency, ['USD'], label);
+    for (const key of ['inputPerMillion', 'cachedInputPerMillion', 'outputPerMillion']) number(pricing[key], label);
+    optional(pricing, ['cacheWriteInputPerMillion', 'decisionsInputPerMillion'], number, label);
+    const checkedAt = string(pricing.checkedAt, label, 64);
+    if (!/^\d{4}-\d{2}-\d{2}/.test(checkedAt) || !Number.isFinite(Date.parse(checkedAt))) invalid(label);
+    url(pricing.sourceUrl, label);
+    optional(pricing, ['decisionsSourceUrl'], url, label);
+  }
+};
+const validateManifest = (value: unknown): RunManifest => {
+  const manifest = object(value, 'manifest.json');
+  if (manifest.schemaVersion !== 1 || !runIdPattern.test(string(manifest.id, '调查 ID'))) invalid('manifest.json');
+  oneOf(manifest.state, runStates, '调查状态');
+  date(manifest.createdAt, '创建时间'); date(manifest.updatedAt, '更新时间');
+  number(manifest.activeElapsedMs, '采集用时');
+  string(manifest.statusMessage, '调查状态说明'); boolean(manifest.reportReady, '报告状态');
+  optional(manifest, ['error'], string, 'manifest.json');
+  optional(manifest, ['stopReason'], (value, label) => oneOf(value, ['budget_exhausted', 'source_exhausted', 'user_finalized'], label), 'manifest.json');
+  const request = object(manifest.request, '调查设置');
+  string(request.name, '调查名称', 80); stringArray(request.keywords, '调查关键词', 12);
+  for (const key of ['durationMinutes', 'contentWindowDays', 'maxSources']) integer(request[key], key);
+  optional(request, ['browserWindowCount'], integer, '调查设置');
+  for (const key of ['includeVideos', 'includeDynamics', 'browserVisible']) boolean(request[key], key);
+  oneOf(request.mode, ['demo', 'live'], '调查模式');
+  number(request.durationMinutes, '采集时间', 1, Math.floor(Number.MAX_SAFE_INTEGER / 60_000));
+  try {
+    manifest.request = {...normalizeResearchRequest({...request, durationMinutes: Math.min(request.durationMinutes as number, 720)}),
+      durationMinutes: request.durationMinutes};
+  } catch {invalid('调查设置');}
+  const counts = object(manifest.counts, '采集统计');
+  for (const key of ['candidates', 'contents', 'opinions', 'validOpinions', 'sources', 'warnings']) integer(counts[key], key);
+  if (manifest.progress !== undefined) {
+    const progress = object(manifest.progress, '调查进度');
+    oneOf(progress.phase, ['preparing', 'discovering', 'collecting', 'analyzing', 'reporting', 'completed'], '调查进度');
+    optional(progress, ['completed', 'total'], integer, '调查进度');
+    // Imported work is idle; stale request activity is deliberately discarded.
+    delete progress.activity;
+  }
+  if (manifest.analysis !== undefined) {
+    const analysis = object(manifest.analysis, '分析信息');
+    oneOf(analysis.mode, ['ai', 'rule_demo'], '分析模式');
+    string(analysis.classifierVersion, '分类版本'); date(analysis.completedAt, '分析完成时间');
+    optional(analysis, ['model'], string, '分析信息');
+    for (const key of ['strongOpinions', 'weakOpinions', 'noiseOpinions']) integer(analysis[key], key);
+    optional(analysis, ['localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped', 'detailedAiOpinions',
+      'processedOpinions', 'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions'], integer, '分析信息');
+    if (analysis.usage !== undefined) validateUsage(analysis.usage, '分析用量');
+  }
+  // Keep only documented manifest fields; account/session configuration is never part of a transfer.
+  return Object.fromEntries(['schemaVersion', 'id', 'state', 'request', 'createdAt', 'updatedAt',
+    'activeElapsedMs', 'statusMessage', 'progress', 'counts', 'stopReason', 'error', 'reportReady', 'analysis']
+    .filter((key) => manifest[key] !== undefined).map((key) => [key, manifest[key]])) as unknown as RunManifest;
+};
+const validateCandidate = (value: unknown, label: string) => {
+  const item = object(value, label);
+  id(item.id, label); oneOf(item.type, ['video', 'dynamic'], label); url(item.url, label);
+  string(item.title, label); string(item.discoveryKeyword, label); integer(item.discoveryRank, label);
+  optional(item, ['discoveryUrl'], metadataUrl, label); optional(item, ['popularityText', 'publishedAt'], string, label);
+  return item;
+};
+const validateContent = (value: unknown, label: string) => {
+  const item = validateCandidate(value, label);
+  string(item.description, label); date(item.collectedAt, label);
+  optional(item, ['resolvedUrl'], url, label);
+  const metrics = object(item.metrics, label);
+  optional(metrics, ['views', 'likes', 'comments', 'danmaku'], number, label);
+  return item;
+};
+const validateOpinion = (value: unknown, label: string) => {
+  const item = object(value, label);
+  id(item.id, label); id(item.contentId, label);
+  oneOf(item.contentType, ['video', 'dynamic'], label);
+  oneOf(item.sourceType, ['comment', 'reply', 'danmaku', 'creator_view'], label);
+  oneOf(item.voiceType, ['viewer', 'creator'], label);
+  string(item.text, label); date(item.collectedAt, label); number(item.likes, label); number(item.replies, label);
+  url(item.sourceUrl, label);
+  optional(item, ['sourcePageUrl'], url, label); optional(item, ['authorProfileUrl'], metadataUrl, label);
+  optional(item, ['normalizedText', 'publishedAt', 'publishedAtText', 'authorUid', 'authorName',
+    'authorHash', 'sourceRecordId', 'parentSourceRecordId'], string, label);
+  return item;
+};
+const validateClassification = (value: unknown, label: string) => {
+  const item = object(value, label);
+  id(item.opinionId, label); number(item.relevanceScore, label, 0, 1);
+  oneOf(item.relevanceLevel, ['high', 'medium', 'low'], label); boolean(item.isValid, label);
+  stringArray(item.topics, label, 100);
+  const sentiments = object(item.topicSentiments, label);
+  for (const sentiment of Object.values(sentiments)) oneOf(sentiment, ['positive', 'negative', 'mixed', 'neutral'], label);
+  for (const topic of item.topics as string[]) {
+    if (!Object.hasOwn(sentiments, topic)) invalid(label);
+    oneOf(sentiments[topic], ['positive', 'negative', 'mixed', 'neutral'], label);
+  }
+  oneOf(item.emotion, ['appreciation', 'frustration', 'mixed', 'neutral'], label);
+  oneOf(item.stance, ['praise', 'complaint', 'suggestion', 'discussion'], label);
+  number(item.severity, label, 0, 5); stringArray(item.behaviorIntents, label, 100); string(item.playerSegment, label);
+  oneOf(item.actionability, ['high', 'medium', 'low'], label); number(item.confidence, label, 0, 1);
+  string(item.classifierVersion, label);
+  for (const terms of Object.values(object(item.matchedTerms, label))) stringArray(terms, label, 100);
+  optional(item, ['invalidReason', 'claimObject', 'claim', 'model'], string, label);
+  optional(item, ['gameRelevant', 'reportEligible', 'needsReview'], boolean, label);
+  optional(item, ['reasonCodes'], (value, label) => stringArray(value, label, 100), label);
+  optional(item, ['analysisMode'], (value, label) => oneOf(value, ['ai', 'rule_demo'], label), label);
+  optional(item, ['insightValue'], (value, label) => oneOf(value, ['strong', 'weak', 'none'], label), label);
+  optional(item, ['informationType'], (value, label) => oneOf(value,
+    ['product_feedback', 'gameplay_advice', 'factual_info', 'community_chatter', 'lore_discussion', 'content_request'], label), label);
+  optional(item, ['reasoningEffort'], (value, label) => oneOf(value, ['none', 'low', 'medium', 'high', 'xhigh', 'max'], label), label);
+  if (item.specificitySignals !== undefined) {
+    stringArray(item.specificitySignals, label, 100);
+    for (const signal of item.specificitySignals as string[]) oneOf(signal,
+      ['cause', 'mechanism', 'impact', 'comparison', 'suggestion', 'behavior_with_reason'], label);
+  }
+  if (item.evidence !== undefined) {
+    if (!Array.isArray(item.evidence) || item.evidence.length > 100) invalid(label);
+    for (const evidence of item.evidence as unknown[]) {
+      const entry = object(evidence, label); string(entry.topic, label); string(entry.quote, label);
+    }
+  }
+  return item;
+};
+const validateCheckpoint = (value: unknown) => {
+  const checkpoint = object(value, 'checkpoint.json');
+  if (checkpoint.schemaVersion !== 1) invalid('checkpoint.json');
+  if (!Array.isArray(checkpoint.pendingCandidates) || checkpoint.pendingCandidates.length > MAX_RECORDS) invalid('checkpoint.json');
+  for (const candidate of checkpoint.pendingCandidates as unknown[]) {
+    const validated = validateCandidate(candidate, 'checkpoint.json');
+    const parsed = new URL(validated.url as string);
+    if (!(parsed.hostname === 'bilibili.com' || parsed.hostname.endsWith('.bilibili.com')) || parsed.port) {
+      throw new RunArchiveError('待采集来源必须是 B 站公开页面；请移除其他网站的待采集地址。');
+    }
+  }
+  stringArray(checkpoint.seenContentIds, 'checkpoint.json'); stringArray(checkpoint.seenOpinionIds, 'checkpoint.json');
+  number(checkpoint.activeElapsedMs, 'checkpoint.json'); date(checkpoint.updatedAt, 'checkpoint.json');
+};
+
+const jsonLineValidator = (name: string, value: unknown): JsonObject => {
+  if (name === 'raw/contents.jsonl') return validateContent(value, name);
+  if (name.endsWith('/opinions.jsonl')) return validateOpinion(value, name);
+  if (name === 'processed/ai-cache.jsonl') {
+    const item = object(value, name);
+    id(item.opinionId, name); string(item.inputHash, name, 512);
+    const classification = validateClassification(item.classification, name);
+    if (classification.opinionId !== item.opinionId) invalid(name);
+    return item;
+  }
+  if (name === 'events.jsonl') {
+    const item = object(value, name);
+    date(item.timestamp, name); oneOf(item.level, ['info', 'warning', 'error'], name);
+    string(item.type, name); string(item.message, name);
+    if (item.details !== undefined) object(item.details, name);
+    return item;
+  }
+  return validateClassification(value, name);
+};
+
+const validateArchiveFiles = async (directory: string, present: Set<string>, newId: string) => {
+  if (!present.has('manifest.json')) throw new RunArchiveError('压缩包内没有调查 manifest.json。');
+  const manifest = validateManifest(parseJson(await readFile(join(directory, 'manifest.json')), 'manifest.json'));
+  const originalRunId = manifest.id;
+  if (manifest.reportReady || ['completed', 'completed_early'].includes(manifest.state)) {
+    if (!manifest.reportReady || reportFiles.some((name) => !present.has(name))) {
+      throw new RunArchiveError('已完成的调查缺少报告或报告所需的数据文件，请重新导出完整调查。');
+    }
+  }
+  const contentIds: string[] = [], opinionIds: string[] = [];
+  for (const name of files.filter((name) => present.has(name) && name.endsWith('.jsonl'))) {
+    const text = decode(await readFile(join(directory, name)), name);
+    const output: string[] = [];
+    let count = 0;
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      count += 1;
+      if (count > MAX_RECORDS || Buffer.byteLength(line) > MAX_LINE_BYTES) throw new RunArchiveError(`${name}记录数量或单条大小超过限制。`, 413);
+      let parsed: unknown;
+      try {parsed = JSON.parse(line);} catch {invalid(name);}
+      validateJsonTree(parsed, name);
+      const item = jsonLineValidator(name, parsed);
+      if (name === 'raw/contents.jsonl') contentIds.push(item.id as string);
+      if (name === 'raw/opinions.jsonl') opinionIds.push(item.id as string);
+      if (name === 'raw/contents.jsonl' || name.endsWith('/opinions.jsonl') || item.runId !== undefined) item.runId = newId;
+      if (name === 'processed/ai-cache.jsonl') {
+        const classification = item.classification as JsonObject;
+        if (classification.runId !== undefined) classification.runId = newId;
+      }
+      output.push(JSON.stringify(item));
+    }
+    await writeFile(join(directory, name), output.length ? `${output.join('\n')}\n` : '');
+  }
+  if (present.has('checkpoint.json')) validateCheckpoint(parseJson(await readFile(join(directory, 'checkpoint.json')), 'checkpoint.json'));
+  else await writeFile(join(directory, 'checkpoint.json'), `${JSON.stringify({schemaVersion: 1,
+    pendingCandidates: [], seenContentIds: [...new Set(contentIds)], seenOpinionIds: [...new Set(opinionIds)],
+    activeElapsedMs: manifest.activeElapsedMs, updatedAt: manifest.updatedAt}, null, 2)}\n`);
+  if (present.has('processed/quality-report.json')) {
+    const quality = object(parseJson(await readFile(join(directory, 'processed/quality-report.json')), '质量报告'), '质量报告');
+    if (quality.analysisMode !== undefined) oneOf(quality.analysisMode, ['ai', 'rule_demo'], '质量报告');
+    optional(quality, ['rawContents', 'rawOpinions', 'processedOpinions', 'validOpinions', 'strongOpinions',
+      'weakOpinions', 'noiseOpinions', 'validCreatorViews', 'invalidOpinions', 'duplicateOpinions', 'cachedAiOpinions',
+      'localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped', 'detailedAiOpinions',
+      'cleaningExcludedOpinions', 'missingContentOpinions'], integer, '质量报告');
+    optional(quality, ['aiModel', 'classifierVersion', 'note'], string, '质量报告');
+    optional(quality, ['generatedAt'], date, '质量报告');
+    if (quality.aiUsage !== undefined) validateUsage(quality.aiUsage, '质量报告用量');
+    if (quality.runId !== undefined) quality.runId = newId;
+    await writeFile(join(directory, 'processed/quality-report.json'), `${JSON.stringify(quality, null, 2)}\n`);
+  }
+  if (present.has('reports/report.md')) decode(await readFile(join(directory, 'reports/report.md')), '报告');
+  const importedAt = new Date().toISOString();
+  const wasActive = manifest.state === 'created' || !transferableStates.has(manifest.state);
+  const run: RunManifest = {...manifest, id: newId, importedFrom: {runId: originalRunId, importedAt},
+    ...(wasActive ? {state: 'paused', statusMessage: '调查已导入并暂停，可查看数据后手动继续。'} : {})};
+  await writeFile(join(directory, 'manifest.json'), `${JSON.stringify(run, null, 2)}\n`);
+  const event = {timestamp: importedAt, level: 'info', type: 'run_imported',
+    message: '调查已从 ZIP 压缩包导入；未自动开始采集或 AI 分析。', details: {originalRunId}};
+  const eventText = present.has('events.jsonl') ? await readFile(join(directory, 'events.jsonl'), 'utf8') : '';
+  await writeFile(join(directory, 'events.jsonl'), `${eventText}${JSON.stringify(event)}\n`);
+  return {run, originalRunId};
+};
+
+const readZipEntries = async (zip: ReadZip) => {
+  if (zip.entryCount > 64) throw new RunArchiveError('压缩包文件过多；每次只能导入一份调查。');
+  const entries: Entry[] = [];
+  const names = new Set<string>();
+  let size = 0;
+  for await (const entry of zip.eachEntry()) {
+    const name = entry.fileName;
+    if (!name || name.length > 400 || /[\u0000-\u001f\\:]/.test(name)
+      || name.startsWith('/') || name.split('/').some((part) => part === '.' || part === '..')) invalid('文件路径');
+    const folded = name.replace(/\/$/, '').toLowerCase();
+    if (names.has(folded)) throw new RunArchiveError('压缩包包含重复文件路径。');
+    names.add(folded);
+    const mode = (entry.externalFileAttributes >>> 16) & 0xf000;
+    if (mode && mode !== 0x8000 && mode !== 0x4000) throw new RunArchiveError('调查压缩包不能包含符号链接或特殊文件。');
+    if ((mode === 0x4000 && !name.endsWith('/')) || (mode === 0x8000 && name.endsWith('/'))) invalid('文件类型');
+    if (entry.isEncrypted()) throw new RunArchiveError('请导入未加密的 ZIP 调查压缩包。');
+    if (![0, 8].includes(entry.compressionMethod)) throw new RunArchiveError('ZIP 使用了不支持的压缩格式。');
+    if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize < 0 || entry.uncompressedSize > MAX_FILE_BYTES) {
+      throw new RunArchiveError('压缩包单个文件超过 128 MiB 的限制。', 413);
+    }
+    size += entry.uncompressedSize;
+    if (size > MAX_SURVEY_EXPANDED_BYTES) throw new RunArchiveError('调查解压后超过 512 MiB 的限制。', 413);
+    if (name.endsWith('/') && entry.uncompressedSize !== 0) invalid('目录条目');
+    entries.push(entry);
+  }
+  const manifests = entries.filter((entry) => /(^|\/)manifest\.json$/.test(entry.fileName));
+  if (manifests.length !== 1) throw new RunArchiveError('压缩包必须包含且仅包含一份调查 manifest.json。');
+  const manifestName = manifests[0].fileName;
+  const prefix = manifestName === 'manifest.json' ? '' : manifestName.slice(0, -'manifest.json'.length);
+  if (prefix && prefix.split('/').filter(Boolean).length !== 1) throw new RunArchiveError('请压缩单个调查文件夹，不要包含多层外部文件夹。');
+  for (const entry of entries) {
+    const name = entry.fileName;
+    if (name === prefix && name.endsWith('/')) continue;
+    if (!name.startsWith(prefix)) throw new RunArchiveError('压缩包只能包含同一个调查文件夹。');
+    const relative = name.slice(prefix.length);
+    if (relative.endsWith('/')) {
+      if (!directories.has(relative.slice(0, -1))) throw new RunArchiveError('压缩包包含不支持的调查目录。');
+    } else if (!allowedFiles.has(relative)) {
+      throw new RunArchiveError('压缩包包含不支持的文件，请使用“导出调查”生成 ZIP。');
+    }
+  }
+  return {entries, prefix};
+};
+
+/** Imports a single interoperable ZIP into a fresh local identity without starting network work. */
+export const importRunArchive = async (store: FileRunStore, contents: Buffer): Promise<{run: RunManifest; originalRunId: string}> => {
+  if (!Buffer.isBuffer(contents) || !contents.length) throw new RunArchiveError('请选择非空的 ZIP 调查压缩包。');
+  if (contents.length > MAX_SURVEY_ARCHIVE_BYTES) throw new RunArchiveError('ZIP 调查压缩包不能超过 128 MiB。', 413);
+  let zip: ReadZip | undefined, stage: string | undefined;
+  try {
+    zip = await fromBufferPromise(contents, {lazyEntries: true, autoClose: false, validateEntrySizes: true, strictFileNames: true});
+    const {entries, prefix} = await readZipEntries(zip);
+    await store.initialize();
+    for (const path of [store.root, store.runsRoot]) {
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new RunArchiveError('导入目标数据目录不能是符号链接。');
+    }
+    stage = await mkdtemp(join(store.root, '.survey-import-'));
+    await Promise.all(['raw', 'processed', 'reports'].map((name) => mkdir(join(stage!, name))));
+    const present = new Set<string>();
+    for (const entry of entries) {
+      if (entry.fileName.endsWith('/')) continue;
+      const relative = entry.fileName.slice(prefix.length);
+      const stream = await zip.openReadStreamPromise(entry);
+      const handle = await open(join(stage, relative), 'wx', 0o600);
+      let received = 0, checksum = 0;
+      try {
+        for await (const chunk of stream) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          received += buffer.length;
+          if (received > entry.uncompressedSize || received > MAX_FILE_BYTES) throw new RunArchiveError('ZIP 文件实际大小超过声明的限制。', 413);
+          checksum = crc32(buffer, checksum);
+          await handle.writeFile(buffer);
+        }
+      } finally {stream.destroy(); await handle.close();}
+      if (received !== entry.uncompressedSize || checksum !== entry.crc32) throw new RunArchiveError('ZIP 文件已损坏，大小或 CRC 校验失败。');
+      present.add(relative);
+    }
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, '');
+    const sourceId = object(parseJson(await readFile(join(stage, 'manifest.json')), 'manifest.json'), 'manifest.json').id;
+    let newId: string;
+    do {
+      newId = `${stamp}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      if (newId === sourceId) continue;
+      try {await lstat(store.runDirectory(newId));} catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') break;
+        throw error;
+      }
+    } while (true);
+    const imported = await validateArchiveFiles(stage, present, newId);
+    await rename(stage, store.runDirectory(newId));
+    stage = undefined;
+    return imported;
+  } catch (error) {
+    if (error instanceof RunArchiveError) throw error;
+    throw new RunArchiveError('无法读取调查压缩包，请确认 ZIP 完整且只包含一份有效调查。');
+  } finally {
+    zip?.close();
+    if (stage) {
+      const target = resolve(stage);
+      if (dirname(target) !== store.root || !basename(target).startsWith('.survey-import-')) throw new RunArchiveError('导入暂存目录位置不正确。');
+      await rm(target, {recursive: true, force: true});
+    }
+  }
+};
+
+/** Exports only allowlisted survey data while holding the same lease as collection and analysis. */
+export const exportRunArchive = async (store: FileRunStore, runId: string): Promise<{filename: string; contents: Buffer}> => {
+  let release: (() => Promise<void>) | undefined;
+  try {
+    const directory = store.runDirectory(runId);
+    for (const path of [store.root, store.runsRoot, directory]) {
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new RunArchiveError('调查目录不能是符号链接。');
+    }
+    release = await store.acquireRunLock(runId);
+    const manifest = await store.getManifest(runId);
+    if (!transferableStates.has(manifest.state)) throw new RunArchiveError('调查正在运行，请先暂停或等待完成后再导出。', 409);
+    if (manifest.reportReady || ['completed', 'completed_early'].includes(manifest.state)) {
+      if (!manifest.reportReady) throw new RunArchiveError('已完成的调查缺少报告，无法导出完整调查。');
+      for (const name of reportFiles) {
+        try {if (!(await lstat(join(directory, name))).isFile()) throw new Error('missing report component');} catch {
+          throw new RunArchiveError('调查缺少报告或报告所需的数据文件，无法导出完整调查。');
+        }
+      }
+    }
+    const archive = new WriteZip();
+    const chunks: Buffer[] = [];
+    let compressedSize = 0, expandedSize = 0;
+    const output = new Promise<Buffer>((resolve, reject) => {
+      archive.once('error', reject);
+      archive.outputStream.once('error', reject);
+      archive.outputStream.on('data', (chunk: Buffer) => {
+        compressedSize += chunk.length;
+        if (compressedSize > MAX_SURVEY_ARCHIVE_BYTES) {
+          reject(new RunArchiveError('调查压缩包超过 128 MiB，无法导出。', 413));
+          (archive.outputStream as Readable).destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      archive.outputStream.once('end', () => resolve(Buffer.concat(chunks)));
+    });
+    // Register rejection handling before asynchronously gathering files.
+    void output.catch(() => undefined);
+    for (const name of files) {
+      try {
+        const parts = name.split('/');
+        if (parts.length > 1) {
+          const parent = await lstat(join(directory, parts[0]));
+          if (!parent.isDirectory() || parent.isSymbolicLink()) throw new RunArchiveError('调查数据目录不能是符号链接。');
+        }
+        const path = join(directory, name);
+        const metadata = await lstat(path);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) throw new RunArchiveError('调查数据文件不能是符号链接或特殊文件。');
+        expandedSize += metadata.size;
+        if (metadata.size > MAX_FILE_BYTES || expandedSize > MAX_SURVEY_EXPANDED_BYTES) {
+          throw new RunArchiveError('调查数据超过导出大小限制。', 413);
+        }
+        archive.addBuffer(await readFile(path), `${runId}/${name}`, {mtime: metadata.mtime});
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          (archive.outputStream as Readable).destroy();
+          throw error;
+        }
+      }
+    }
+    archive.end();
+    const title = manifest.request.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').trim().replace(/[. ]+$/, '').slice(0, 80) || '火影调查';
+    return {filename: `${title}-${runId}.zip`, contents: await output};
+  } catch (error) {
+    if (error instanceof RunArchiveError) throw error;
+    if (error instanceof RunAlreadyActiveError) throw new RunArchiveError('调查正在运行，请先暂停或等待完成后再导出。', 409);
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new RunArchiveError('调查不存在。', 404);
+    throw new RunArchiveError('无法导出调查数据，请检查调查文件是否完整。');
+  } finally {await release?.();}
+};

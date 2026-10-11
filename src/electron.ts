@@ -74,6 +74,16 @@ const openMainWindow = async (url: string) => {
     if (/^https?:\/\//i.test(externalUrl)) void shell.openExternal(externalUrl);
     return {action: 'deny'};
   });
+  const downloadWindow = mainWindow;
+  downloadWindow.webContents.session.on('will-download', (_event, item, contents) => {
+    if (contents !== downloadWindow.webContents || !/\.zip$/i.test(item.getFilename())) return;
+    item.setSaveDialogOptions({
+      title: '保存调查压缩包',
+      buttonLabel: '保存',
+      defaultPath: join(electronApp.getPath('downloads'), item.getFilename()),
+      filters: [{name: '调查压缩包', extensions: ['zip']}]
+    });
+  });
   mainWindow.webContents.on('will-navigate', (event, destination) => {
     if (destination !== url && !destination.startsWith(`${url}/`)) {
       event.preventDefault();

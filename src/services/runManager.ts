@@ -13,6 +13,7 @@ import {processRun} from '../processing/runProcessor';
 import {AiClassificationProgress} from '../processing/aiClassifier';
 import {ArchtreeAuthService} from './archtreeAuth';
 import {ChromeConnectionService} from './chromeConnection';
+import {exportRunArchive, importRunArchive, RunArchiveError} from './runArchive';
 
 type Directive = 'continue' | 'pause' | 'finalize';
 
@@ -37,6 +38,8 @@ export class RunManager {
   private readonly backgroundProcessing = new Set<string>();
   private readonly events = new EventEmitter();
   private currentStore: FileRunStore;
+  private archiveTransfers = 0;
+  private dataRootChanging = false;
 
   constructor(
     store: FileRunStore,
@@ -109,19 +112,53 @@ export class RunManager {
   async changeDataRoot(dataRoot: string) {
     const nextStore = new FileRunStore(dataRoot);
     if (nextStore.root === this.store.root) return this.store.root;
-    const manifests = await this.store.listManifests();
-    if (this.active.size > 0 || this.backgroundProcessing.size > 0 || manifests.some((item) => activeStates.has(item.state))) {
-      const error = new Error('调查正在采集或生成报告，请等待完成或暂停后再更改存放位置。') as Error & {statusCode: number};
-      error.statusCode = 409;
-      throw error;
+    if (this.archiveTransfers > 0 || this.dataRootChanging) {
+      throw new RunArchiveError('正在导入、导出调查或更改存放位置，请等待完成后再更改。', 409);
     }
+    this.dataRootChanging = true;
+    try {
+      const manifests = await this.store.listManifests();
+      if (this.active.size > 0 || this.backgroundProcessing.size > 0 || manifests.some((item) => activeStates.has(item.state))) {
+        const error = new Error('调查正在采集或生成报告，请等待完成或暂停后再更改存放位置。') as Error & {statusCode: number};
+        error.statusCode = 409;
+        throw error;
+      }
+      await nextStore.initialize();
+      this.currentStore = nextStore;
+      this.config.dataRoot = nextStore.root;
+      this.config.uidSalt = localUidSalt(nextStore.root);
+      await this.initialize();
+      return nextStore.root;
+    } finally {
+      this.dataRootChanging = false;
+    }
+  }
 
-    await nextStore.initialize();
-    this.currentStore = nextStore;
-    this.config.dataRoot = nextStore.root;
-    this.config.uidSalt = localUidSalt(nextStore.root);
-    await this.initialize();
-    return nextStore.root;
+  private async transferArchive<T>(operation: (store: FileRunStore) => Promise<T>) {
+    if (this.dataRootChanging) {
+      throw new RunArchiveError('正在更改调查存放位置，请等待完成后再导入或导出。', 409);
+    }
+    this.archiveTransfers += 1;
+    try {
+      return await operation(this.store);
+    } finally {
+      this.archiveTransfers -= 1;
+    }
+  }
+
+  async exportArchive(runId: string) {
+    if (this.active.has(runId) || this.backgroundProcessing.has(runId)) {
+      throw new RunArchiveError('调查正在采集或分析，请先暂停或等待完成后再导出。', 409);
+    }
+    return this.transferArchive((store) => exportRunArchive(store, runId));
+  }
+
+  async importArchive(contents: Buffer) {
+    return this.transferArchive(async (store) => {
+      const result = await importRunArchive(store, contents);
+      this.emit(result.run);
+      return result;
+    });
   }
 
   subscribe(listener: (manifest: RunManifest) => void) {
