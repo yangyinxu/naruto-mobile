@@ -1,6 +1,6 @@
 import {FormEvent, useMemo, useState} from 'react';
-import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, KeyRound, LoaderCircle, LogOut, MonitorCog, Search, Sparkles, Unplug} from 'lucide-react';
-import {AppSettings, ChromeConnectionStatus, ResearchRequest} from '../types';
+import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, KeyRound, LoaderCircle, LogOut, MonitorCog, Save, Search, Sparkles, Unplug} from 'lucide-react';
+import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest} from '../types';
 
 interface Props {
   settings: AppSettings;
@@ -10,6 +10,7 @@ interface Props {
   selectingDataRoot: boolean;
   onStart: (request: ResearchRequest) => Promise<void>;
   onSelectDataRoot: () => Promise<void>;
+  onSaveKeywords?: (preferences: KeywordSettings) => Promise<void>;
   onLoginAnalysis?: (identifier: string, password: string) => Promise<void>;
   onLogoutAnalysis?: () => Promise<void>;
   onOpenGuide: () => void;
@@ -23,6 +24,9 @@ const presets = [
   {minutes: 120, title: '深入调查', description: '适合版本或活动复盘'}
 ];
 
+const KEYWORD_PREFIX = '火影手游';
+const GAME_PREFIX = /^火影(?:忍者)?手游/u;
+
 export const NewResearch = ({
   settings,
   chromeStatus,
@@ -31,6 +35,7 @@ export const NewResearch = ({
   selectingDataRoot,
   onStart,
   onSelectDataRoot,
+  onSaveKeywords,
   onLoginAnalysis,
   onLogoutAnalysis,
   onOpenGuide,
@@ -39,17 +44,31 @@ export const NewResearch = ({
 }: Props) => {
   const [durationMinutes, setDuration] = useState(settings.defaults.durationMinutes);
   const [contentWindowDays, setWindow] = useState(settings.defaults.contentWindowDays);
-  const [keywords, setKeywords] = useState(settings.defaults.keywords.join('\n'));
+  const [keywords, setKeywords] = useState(settings.defaults.keywords.map((keyword) => {
+    if (settings.defaults.useKeywordPrefix !== undefined) return keyword;
+    const topic = keyword.startsWith(KEYWORD_PREFIX) ? keyword.slice(KEYWORD_PREFIX.length).trim() : '';
+    return topic || keyword;
+  }).join('\n'));
+  const [useKeywordPrefix, setUseKeywordPrefix] = useState(settings.defaults.useKeywordPrefix ?? true);
+  const [savingKeywords, setSavingKeywords] = useState(false);
+  const [keywordSaveMessage, setKeywordSaveMessage] = useState('');
+  const [keywordSaveError, setKeywordSaveError] = useState('');
   const [includeVideos, setVideos] = useState(settings.defaults.includeVideos);
   const [includeDynamics, setDynamics] = useState(settings.defaults.includeDynamics);
   const [mode, setMode] = useState<'live' | 'demo'>(settings.defaults.mode);
-  const [browserWindowCount, setBrowserWindowCount] = useState(settings.defaults.browserWindowCount);
+  const [browserWindowCount, setBrowserWindowCount] = useState([4, 8].includes(settings.defaults.browserWindowCount) ? settings.defaults.browserWindowCount : 4);
   const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
   const [archtreeIdentifier, setArchtreeIdentifier] = useState('');
   const [archtreePassword, setArchtreePassword] = useState('');
   const [authenticating, setAuthenticating] = useState(false);
   const [authenticationError, setAuthenticationError] = useState('');
-  const keywordList = useMemo(() => keywords.split(/\r?\n|，|,/).map((item) => item.trim()).filter(Boolean), [keywords]);
+  const rawKeywords = useMemo(() => [...new Set(keywords.split(/\r?\n|，|,/)
+    .map((item) => item.trim())
+    .filter(Boolean))], [keywords]);
+  const keywordList = useMemo(() => [...new Set(rawKeywords
+    .map((item) => useKeywordPrefix && !GAME_PREFIX.test(item) ? `${KEYWORD_PREFIX} ${item}` : item))], [rawKeywords, useKeywordPrefix]);
+  const keywordError = rawKeywords.length > 12 || keywordList.length > 12 ? '最多填写 12 个搜索词。'
+    : keywordList.some((keyword) => keyword.length > 40) ? '单个实际搜索词不能超过 40 个字符。' : '';
   const chromeTransitioning = connectingChrome
     || chromeStatus?.state === 'connecting'
     || chromeStatus?.state === 'disconnecting';
@@ -76,6 +95,26 @@ export const NewResearch = ({
       browserWindowCount: mode === 'live' ? browserWindowCount : 1,
       maxSources
     });
+  };
+
+  const saveKeywords = async () => {
+    if (!onSaveKeywords || keywordList.length === 0 || keywordError) return;
+    setSavingKeywords(true);
+    setKeywordSaveMessage('');
+    setKeywordSaveError('');
+    try {
+      await onSaveKeywords({keywords: rawKeywords, useKeywordPrefix});
+      setKeywordSaveMessage('已保存，下次打开自动使用。');
+    } catch (error) {
+      setKeywordSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingKeywords(false);
+    }
+  };
+
+  const clearKeywordSaveMessage = () => {
+    setKeywordSaveMessage('');
+    setKeywordSaveError('');
   };
 
   const loginAnalysis = async () => {
@@ -151,8 +190,16 @@ export const NewResearch = ({
 
         <div className="form-divider"/>
         <div className="step-heading"><span>2</span><div><h2>调查哪些内容？</h2><p>默认设置可以直接开始</p></div></div>
-        <label className="field-label" htmlFor="keywords">关键词 <small>每行一个</small></label>
-        <div className="input-with-icon"><Search size={18}/><textarea id="keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} rows={3}/></div>
+        <div className="keyword-heading">
+          <label className="field-label" htmlFor="keywords">关键词 <small>每行一个</small></label>
+          <label className="keyword-prefix-option"><input type="checkbox" checked={useKeywordPrefix} disabled={savingKeywords} onChange={(event) => {setUseKeywordPrefix(event.target.checked); clearKeywordSaveMessage();}}/><span>自动添加「火影手游」前缀</span></label>
+        </div>
+        <div className="input-with-icon"><Search size={18}/><textarea id="keywords" value={keywords} disabled={savingKeywords} onChange={(event) => {setKeywords(event.target.value); clearKeywordSaveMessage();}} rows={3} placeholder={'十月活动\n新忍者评价\n氪金意愿'} aria-describedby="keyword-help keyword-error" aria-invalid={Boolean(keywordError)}/></div>
+        <p className="keyword-help" id="keyword-help">{useKeywordPrefix ? '只填主题即可；已带游戏名前缀的词不会重复添加。' : '前缀已关闭，将按你填写的关键词原样搜索。'}</p>
+        {keywordList.length > 0 && <div className="keyword-search-preview" aria-label="实际搜索词" aria-live="polite"><small>实际搜索词</small><ul>{keywordList.map((keyword) => <li key={keyword}>{keyword}</li>)}</ul></div>}
+        <p className="keyword-error" id="keyword-error" role={keywordError ? 'alert' : undefined}>{keywordError}</p>
+        <div className="keyword-save-row"><button className="keyword-save-button" type="button" disabled={!onSaveKeywords || savingKeywords || keywordList.length === 0 || Boolean(keywordError)} onClick={() => void saveKeywords()}>{savingKeywords ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {savingKeywords ? '正在保存…' : '保存关键词'}</button><small role="status">{keywordSaveMessage || '同时记住关键词和前缀开关。'}</small></div>
+        {keywordSaveError && <p className="keyword-error" role="alert">{keywordSaveError}</p>}
         <div className="inline-options">
           <label className="check-option"><input type="checkbox" checked={includeVideos} onChange={(event) => setVideos(event.target.checked)}/><span>热门视频</span></label>
           <label className="check-option"><input type="checkbox" checked={includeDynamics} onChange={(event) => setDynamics(event.target.checked)}/><span>热门动态</span></label>
@@ -164,27 +211,26 @@ export const NewResearch = ({
           <small>选择调查运行模式</small>
         </div>
         <div className="advanced-panel">
-          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥' : '需要登录 Archtree'}</small></span></label>
+          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥' : '需要登录 Archtree'}`}</small></span></label>
           <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span></label>
         </div>
         <label className={`parallel-windows ${mode === 'demo' ? 'disabled' : ''}`}>
           <span className="parallel-windows-icon"><Gauge size={20}/></span>
           <span className="parallel-windows-copy">
             <strong>并行调查标签页</strong>
-            <small>{mode === 'live' ? '在已连接的 Chrome 中同时读取多个来源；建议先用 2 个。' : '演示模式不打开 Chrome 标签页。'}</small>
+            <small>{mode === 'live' ? '在已连接的 Chrome 中同时读取多个来源，默认使用 4 个标签页。' : '演示模式不打开 Chrome 标签页。'}</small>
           </span>
           <select
             aria-label="并行调查标签页数"
-            value={mode === 'live' ? browserWindowCount : 1}
+            value={browserWindowCount}
             disabled={mode === 'demo'}
             onChange={(event) => setBrowserWindowCount(Number(event.target.value))}
           >
-            <option value={1}>1 个 · 稳妥</option>
-            <option value={2}>2 个 · 推荐</option>
-            <option value={3}>3 个 · 较快</option>
-            <option value={4}>4 个 · 最快</option>
+            <option value={4}>4 个 · 默认</option>
+            <option value={8}>8 个 · 更快</option>
           </select>
         </label>
+        {mode === 'live' && settings.analysis?.maxConcurrentRequests !== undefined && <p className="keyword-help">采集标签页数只控制读取来源。AI 分析独立运行，最多 {settings.analysis.maxConcurrentRequests} 个请求并行，遇到限流时自动减少；每次详析最多 {settings.analysis.batchSize ?? 10} 条记录。</p>}
         <label className="parallel-windows source-limit">
           <span className="parallel-windows-icon"><Files size={20}/></span>
           <span className="parallel-windows-copy">
@@ -251,7 +297,7 @@ export const NewResearch = ({
           <p>工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。</p>
         </section>
 
-        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
+        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || Boolean(keywordError) || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
           {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
         </button>
         <p className="compliance-copy">只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>

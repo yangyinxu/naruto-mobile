@@ -24,12 +24,37 @@ import {
 
 const runIdPattern = /^\d{8}T\d{6}-[a-f0-9]{8}$/;
 
+export class RunAlreadyActiveError extends Error {
+  constructor() {
+    super('该调查正在另一个进程中运行。');
+    this.name = 'RunAlreadyActiveError';
+  }
+}
+
 const timestampId = () => {
   const time = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, '');
   return `${time}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 };
 
 const readJson = async <T>(path: string): Promise<T> => JSON.parse(await readFile(path, 'utf8')) as T;
+
+const lockOwnerHasExited = async (path: string) => {
+  let owner: {pid?: unknown} | null;
+  try {
+    owner = await readJson<{pid?: unknown} | null>(path);
+  } catch {
+    // Another owner may still be writing its fresh lock. Never reclaim partial ownership.
+    return false;
+  }
+  const pid = owner?.pid;
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+};
 
 const atomicJsonWrite = async (path: string, value: unknown) => {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
@@ -289,8 +314,8 @@ export class FileRunStore {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       try {
         const lockStat = await stat(lockPath);
-        if (Date.now() - lockStat.mtimeMs <= 120_000) {
-          throw new Error('该调查正在另一个进程中运行。');
+        if (Date.now() - lockStat.mtimeMs <= 120_000 && !await lockOwnerHasExited(lockPath)) {
+          throw new RunAlreadyActiveError();
         }
       } catch (lockError) {
         if ((lockError as NodeJS.ErrnoException).code !== 'ENOENT') throw lockError;

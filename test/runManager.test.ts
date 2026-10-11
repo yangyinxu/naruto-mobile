@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import test from 'node:test';
 import {AppConfig} from '../src/config';
 import {normalizeResearchRequest} from '../src/domain/validation';
-import {FileRunStore} from '../src/infrastructure/fileRunStore';
+import {FileRunStore, RunAlreadyActiveError} from '../src/infrastructure/fileRunStore';
 import {RunManager} from '../src/services/runManager';
 import {ArchtreeAuthService} from '../src/services/archtreeAuth';
 
@@ -251,6 +253,184 @@ test('restores interrupted analysis and resumes cached data without Chrome or ex
     assert.equal((await store.readAiClassificationCache(created.id)).length, 1);
     assert.equal(accessChecks, 2);
     await new Promise((resolve) => setTimeout(resolve, 40));
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('leaves a leased investigation untouched and recovers it after its owner releases the lease', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-live-recovery-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    analysisTransport: 'proxy', aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const ownerStore = new FileRunStore(directory);
+  let release: (() => Promise<void>) | undefined;
+  try {
+    await ownerStore.initialize();
+    const created = await ownerStore.createRun(normalizeResearchRequest({mode: 'live', keywords: ['火影手游']}));
+    const active = await ownerStore.updateManifest(created.id, (current) => ({...current, state: 'processing',
+      activeElapsedMs: 70_000, stopReason: 'budget_exhausted',
+      progress: {phase: 'analyzing', completed: 4, total: 10}}));
+    const eventsBefore = await ownerStore.readEvents(created.id);
+    release = await ownerStore.acquireRunLock(created.id);
+    const manager = new RunManager(new FileRunStore(directory), config);
+
+    await assert.rejects(manager.store.acquireRunLock(created.id), RunAlreadyActiveError);
+    await manager.initialize();
+    assert.deepEqual(await ownerStore.getManifest(created.id), active);
+    assert.deepEqual(await ownerStore.readEvents(created.id), eventsBefore);
+
+    await release();
+    release = undefined;
+    await manager.initialize();
+    const recovered = await ownerStore.getManifest(created.id);
+    assert.equal(recovered.state, 'paused');
+    assert.equal(recovered.activeElapsedMs, 70_000);
+    assert.deepEqual(recovered.progress, active.progress);
+    assert.match(recovered.statusMessage, /继续分析/);
+    const eventsAfter = await ownerStore.readEvents(created.id);
+    assert.deepEqual(eventsAfter.slice(0, -1), eventsBefore);
+    assert.equal(eventsAfter.at(-1)?.type, 'run_recovered');
+    release = await ownerStore.acquireRunLock(created.id);
+  } finally {
+    await release?.();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('immediately recovers a fresh investigation lease whose child process has exited', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-exited-recovery-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['火影手游']}));
+    const interrupted = await store.updateManifest(created.id, current => ({...current, state: 'processing',
+      activeElapsedMs: 70_000, stopReason: 'budget_exhausted',
+      progress: {phase: 'analyzing', completed: 4, total: 10}}));
+    const exitedOwner = spawn(process.execPath, ['-e', 'process.exit(0)'], {windowsHide: true, stdio: 'ignore'});
+    const pid = exitedOwner.pid;
+    assert.ok(pid && pid > 0);
+    const [exitCode] = await once(exitedOwner, 'close');
+    assert.equal(exitCode, 0);
+    assert.throws(() => process.kill(pid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === 'ESRCH');
+    const lockPath = join(store.runDirectory(created.id), '.active.lock');
+    await writeFile(lockPath, JSON.stringify({pid, token: 'exited-owner', createdAt: new Date().toISOString()}));
+    assert.ok(Date.now() - (await stat(lockPath)).mtimeMs < 120_000);
+
+    await new RunManager(store, config).initialize();
+    const recovered = await store.getManifest(created.id);
+    assert.equal(recovered.state, 'paused');
+    assert.equal(recovered.activeElapsedMs, interrupted.activeElapsedMs);
+    assert.deepEqual(recovered.progress, interrupted.progress);
+    assert.equal((await store.readEvents(created.id)).at(-1)?.type, 'run_recovered');
+    const release = await store.acquireRunLock(created.id);
+    await release();
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('preserves fresh investigation leases with incomplete or invalid process ownership', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-unknown-owner-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['火影手游']}));
+    const active = await store.updateManifest(created.id, current => ({...current, state: 'collecting'}));
+    const eventsBefore = await store.readEvents(created.id);
+    const lockPath = join(store.runDirectory(created.id), '.active.lock');
+    const manager = new RunManager(store, config);
+    for (const owner of ['', '{"pid":', 'null', '{}', '{"pid":0}', '{"pid":-1}', '{"pid":1.5}', '{"pid":"999999"}']) {
+      await writeFile(lockPath, owner);
+      await manager.initialize();
+      await assert.rejects(store.acquireRunLock(created.id), RunAlreadyActiveError);
+      assert.deepEqual(await store.getManifest(created.id), active);
+      assert.deepEqual(await store.readEvents(created.id), eventsBefore);
+    }
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('preserves fresh investigation leases when the process check fails without proving its owner exited', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-unchecked-owner-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['火影手游']}));
+    const active = await store.updateManifest(created.id, current => ({...current, state: 'collecting'}));
+    const eventsBefore = await store.readEvents(created.id);
+    await writeFile(join(store.runDirectory(created.id), '.active.lock'), JSON.stringify({pid: process.pid}));
+    const manager = new RunManager(store, config);
+    for (const code of ['EPERM', 'EACCES', 'EINVAL']) {
+      context.mock.method(process, 'kill', () => {throw Object.assign(new Error('Process ownership check failed'), {code});});
+      await manager.initialize();
+      await assert.rejects(store.acquireRunLock(created.id), RunAlreadyActiveError);
+      assert.deepEqual(await store.getManifest(created.id), active);
+      assert.deepEqual(await store.readEvents(created.id), eventsBefore);
+      context.mock.restoreAll();
+    }
+  } finally {
+    context.mock.restoreAll();
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('does not recover an investigation that completes before the recovery lease is acquired', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-completed-recovery-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  const acquireRunLock = store.acquireRunLock.bind(store);
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['火影手游']}));
+    await store.updateManifest(created.id, (current) => ({...current, state: 'processing'}));
+    const eventsBefore = await store.readEvents(created.id);
+    let completed: Awaited<ReturnType<FileRunStore['getManifest']>> | undefined;
+    store.acquireRunLock = async (runId) => {
+      completed = await store.updateManifest(runId, (current) => ({...current, state: 'completed',
+        reportReady: true, statusMessage: '调查和报告已经完成。', progress: {phase: 'completed'}}));
+      return acquireRunLock(runId);
+    };
+
+    await new RunManager(store, config).initialize();
+    assert.deepEqual(await store.getManifest(created.id), completed);
+    assert.deepEqual(await store.readEvents(created.id), eventsBefore);
+    const release = await acquireRunLock(created.id);
+    await release();
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('surfaces recovery lease errors instead of treating them as another active investigation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-recovery-error-'));
+  const config: AppConfig = {host: '127.0.0.1', port: 0, dataRoot: directory,
+    browserChannel: 'chrome', browserHeadless: true, openBrowser: false, uidSalt: 'test-salt',
+    aiModel: 'gpt-6-luna', aiReasoningEffort: 'medium', aiBatchSize: 1, aiConcurrency: 1};
+  const store = new FileRunStore(directory);
+  try {
+    await store.initialize();
+    const created = await store.createRun(normalizeResearchRequest({mode: 'demo', keywords: ['火影手游']}));
+    const active = await store.updateManifest(created.id, (current) => ({...current, state: 'collecting'}));
+    const eventsBefore = await store.readEvents(created.id);
+    const failure = Object.assign(new Error('Cannot open the investigation lease'), {code: 'EACCES'});
+    store.acquireRunLock = async () => {throw failure;};
+
+    await assert.rejects(new RunManager(store, config).initialize(), (error) => error === failure);
+    assert.deepEqual(await store.getManifest(created.id), active);
+    assert.deepEqual(await store.readEvents(created.id), eventsBefore);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

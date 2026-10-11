@@ -8,7 +8,7 @@ import {
   RunManifest,
   RunState
 } from '../domain/types';
-import {FileRunStore} from '../infrastructure/fileRunStore';
+import {FileRunStore, RunAlreadyActiveError} from '../infrastructure/fileRunStore';
 import {processRun} from '../processing/runProcessor';
 import {AiClassificationProgress} from '../processing/aiClassifier';
 import {ArchtreeAuthService} from './archtreeAuth';
@@ -67,7 +67,7 @@ export class RunManager {
       : activity?.stage === 'detail' ? 'Luna 正在详析' : '正在准备意见分析';
     await this.update(runId, (current) => ({
       ...current,
-      statusMessage: `${stage} · 已完成 ${completed}/${total}${cached ? `（复用 ${cached} 条缓存）` : ''}`,
+      statusMessage: `${stage} · 总体已处理 ${completed}/${total} 条记录${cached ? `（其中复用 ${cached} 条缓存）` : ''}`,
       progress: {phase: 'analyzing', completed, total, activity}
     }));
   }
@@ -76,20 +76,33 @@ export class RunManager {
     await this.store.initialize();
     const manifests = await this.store.listManifests();
     await Promise.all(manifests.filter((item) => activeStates.has(item.state)).map(async (item) => {
-      const checkpoint = await this.store.readCheckpoint(item.id).catch(() => null);
-      await this.store.updateManifest(item.id, (current) => ({
-        ...current,
-        state: 'paused',
-        activeElapsedMs: Math.max(current.activeElapsedMs, checkpoint?.activeElapsedMs ?? 0),
-        statusMessage: collectionStopped(current)
-          ? '上次分析被关闭，原始数据和分析缓存已保留。可以继续分析并生成报告。'
-          : '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。',
-        progress: collectionStopped(current)
-          ? ['analyzing', 'reporting'].includes(current.progress?.phase ?? '')
-            ? current.progress : {phase: 'analyzing'}
-          : {phase: 'collecting'}
-      }));
-      await this.recordEvent(item.id, 'warning', 'run_recovered', '检测到未完成调查，已安全恢复为暂停状态。');
+      let release: () => Promise<void>;
+      try {
+        release = await this.store.acquireRunLock(item.id);
+      } catch (error) {
+        if (error instanceof RunAlreadyActiveError) return;
+        throw error;
+      }
+      try {
+        const current = await this.store.getManifest(item.id);
+        if (!activeStates.has(current.state)) return;
+        const checkpoint = await this.store.readCheckpoint(item.id).catch(() => null);
+        await this.store.updateManifest(item.id, (manifest) => ({
+          ...manifest,
+          state: 'paused',
+          activeElapsedMs: Math.max(manifest.activeElapsedMs, checkpoint?.activeElapsedMs ?? 0),
+          statusMessage: collectionStopped(manifest)
+            ? '上次分析被关闭，原始数据和分析缓存已保留。可以继续分析并生成报告。'
+            : '上次运行被关闭，进度已保留。可以继续采集或直接生成报告。',
+          progress: collectionStopped(manifest)
+            ? ['analyzing', 'reporting'].includes(manifest.progress?.phase ?? '')
+              ? manifest.progress : {phase: 'analyzing'}
+            : {phase: 'collecting'}
+        }));
+        await this.recordEvent(item.id, 'warning', 'run_recovered', '检测到未完成调查，已安全恢复为暂停状态。');
+      } finally {
+        await release();
+      }
     }));
   }
 
@@ -269,7 +282,7 @@ export class RunManager {
         statusMessage: current.request.mode === 'demo' ? '正在使用本地演示规则生成报告…'
           : '正在恢复 Luna 分析，复用已保存的结果…',
         progress: current.progress?.phase === 'analyzing' && !current.reportReady
-          ? current.progress : {phase: 'analyzing', completed: 0, total: current.counts.opinions}
+          ? current.progress : {phase: 'analyzing'}
       }));
       await this.recordEvent(runId, 'info', reanalysis ? 'ai_reanalysis_started' : 'analysis_resumed',
         '使用已有原始数据和分析缓存生成报告。');
@@ -318,6 +331,11 @@ export class RunManager {
           creatorViewsExcluded: result.creatorViewsExcluded,
           fastTriageSkipped: result.fastTriageSkipped,
           detailedAiOpinions: result.detailedAiOpinions,
+          processedOpinions: result.processedOpinions,
+          duplicateOpinions: result.duplicateOpinions,
+          cleaningExcludedOpinions: result.cleaningExcludedOpinions,
+          missingContentOpinions: result.missingContentOpinions,
+          cachedAiOpinions: result.cachedAiOpinions,
           usage: result.aiUsage
         },
         counts: {
@@ -454,7 +472,7 @@ export class RunManager {
       statusMessage: current.request.mode === 'demo'
         ? '采集结束，正在使用本地演示规则生成报告…'
         : `采集结束，正在使用 ${this.config.aiModel} 筛选全部意见…`,
-      progress: {phase: 'analyzing', completed: 0, total: current.counts.opinions}
+      progress: {phase: 'analyzing'}
     }));
     if (manifest.request.mode === 'live') await this.ensureLiveAnalysisReady();
     const processed = await processRun(this.store, processingManifest, this.config, {
@@ -486,6 +504,11 @@ export class RunManager {
         creatorViewsExcluded: processed.creatorViewsExcluded,
         fastTriageSkipped: processed.fastTriageSkipped,
         detailedAiOpinions: processed.detailedAiOpinions,
+        processedOpinions: processed.processedOpinions,
+        duplicateOpinions: processed.duplicateOpinions,
+        cleaningExcludedOpinions: processed.cleaningExcludedOpinions,
+        missingContentOpinions: processed.missingContentOpinions,
+        cachedAiOpinions: processed.cachedAiOpinions,
         usage: processed.aiUsage
       },
       statusMessage: early ? '已根据当前样本提前生成报告。' : '调查和报告已经完成。',

@@ -7,7 +7,7 @@ import {RecordsView} from './components/RecordsView';
 import {ReportView} from './components/ReportView';
 import {RunDetail} from './components/RunDetail';
 import {api} from './lib/api';
-import {AppSettings, ChromeConnectionStatus, ResearchRequest, RunManifest} from './types';
+import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest, RunManifest} from './types';
 
 type View = 'new' | 'guide' | 'history' | 'run' | 'report' | 'records';
 type Skin = 'classic' | 'shinobi';
@@ -168,6 +168,11 @@ export default function App() {
     setSettings(await api.settings());
   };
 
+  const saveKeywords = async (preferences: KeywordSettings) => {
+    const saved = await api.saveKeywords(preferences);
+    setSettings((current) => current ? {...current, defaults: {...current.defaults, ...saved}} : current);
+  };
+
   if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在启动本地调查工具…</strong></div>;
 
   return (
@@ -193,7 +198,7 @@ export default function App() {
       </header>
 
       {view === 'new' && (
-        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onLoginAnalysis={loginAnalysis} onLogoutAnalysis={logoutAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
+        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSaveKeywords={saveKeywords} onLoginAnalysis={loginAnalysis} onLogoutAnalysis={logoutAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'guide' && (
         <ChromeGuide chromeSettingsSupported={(settings.apiVersion ?? 0) >= 6} chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onOpenChromeSettings={openChromeSettings} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>

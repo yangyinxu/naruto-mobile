@@ -31,6 +31,9 @@ describe('History', () => {
     const onBrowse = vi.fn();
     const onOpenFolder = vi.fn();
     render(<History runs={[run]} onOpen={vi.fn()} onBrowse={onBrowse} onOpenFolder={onOpenFolder}/>);
+    expect(screen.getByText('条原始记录')).toBeInTheDocument();
+    expect(screen.getByText('最长 5 分钟')).toBeInTheDocument();
+    expect(screen.getByText(/清理去重前的评论、回复、弹幕和作者观点合计/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', {name: /浏览完整记录/}));
     expect(onBrowse).toHaveBeenCalledWith(run);
     fireEvent.click(screen.getByRole('button', {name: /打开 历史记录入口测试 的完整记录文件夹/}));

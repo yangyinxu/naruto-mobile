@@ -532,7 +532,7 @@ export class BilibiliBrowserCollector implements Collector {
         await context.callbacks.onCheckpoint(context.checkpoint);
       }
 
-      const configuredWindowCount = Math.max(1, Math.min(4, context.manifest.request.browserWindowCount ?? 1));
+      const configuredWindowCount = Math.max(1, Math.min(8, context.manifest.request.browserWindowCount ?? 4));
       const windowCount = Math.min(configuredWindowCount, Math.max(1, context.checkpoint.pendingCandidates.length));
       const workerPages = [discoveryPage];
       if (windowCount > 1) {

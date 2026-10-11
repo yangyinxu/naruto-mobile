@@ -21,7 +21,8 @@ class AiRequestError extends Error {
     message: string,
     readonly retryable: boolean,
     readonly retryAfterMs?: number,
-    readonly batchReducible = false
+    readonly batchReducible = false,
+    readonly rateLimited = false
   ) {
     super(message);
   }
@@ -341,25 +342,9 @@ const isRetryable = (error: unknown) => error instanceof AiRequestError
   : error instanceof Error && (error.name === 'TimeoutError'
     || (error instanceof TypeError && error.message === 'fetch failed'));
 
-/** Drain in-flight requests and cache writes before returning an error or releasing the run lock. */
-const processBatches = async <T>(batches: T[], concurrency: number, process: (batch: T) => Promise<void>) => {
-  let next = 0;
-  let failed = false;
-  let firstError: unknown;
-  const worker = async () => {
-    while (!failed && next < batches.length) {
-      const batch = batches[next++];
-      try {
-        await process(batch);
-      } catch (error) {
-        if (!failed) firstError = error;
-        failed = true;
-      }
-    }
-  };
-  await Promise.all(Array.from({length: Math.min(concurrency, batches.length)}, worker));
-  if (failed) throw firstError;
-};
+const isBatchReducible = (error: unknown) => error instanceof AiBatchValidationError
+  || (error instanceof AiRequestError && error.batchReducible)
+  || (error instanceof Error && error.name === 'TimeoutError');
 
 /** High-throughput, resumable opinion classification using Luna Structured Outputs. */
 export class AiClassifier {
@@ -372,6 +357,15 @@ export class AiClassifier {
   private usage = emptyUsage();
   private readonly activeRequests = new Map<symbol, {count: number; startedAt: number}>();
   private readonly retryWaits = new Map<symbol, number>();
+  private readonly permitWaiters = new Set<() => void>();
+  private effectiveConcurrency: number;
+  private healthyRequests = 0;
+  private rateLimitUntil = 0;
+  private rateLimitRevision = 0;
+  private sharedCooldown?: Promise<void>;
+  private stopped?: {error: unknown};
+  private stopSignal?: Promise<void>;
+  private resolveStop?: () => void;
   private publishActivity?: () => Promise<void>;
 
   constructor(private readonly options: AiClassifierOptions) {
@@ -381,7 +375,8 @@ export class AiClassifier {
     this.model = options.model?.trim() || 'gpt-6-luna';
     this.reasoningEffort = options.reasoningEffort ?? 'medium';
     this.batchSize = clamp(Math.floor(options.batchSize ?? 10), 1, options.proxy ? 10 : 50);
-    this.concurrency = clamp(Math.floor(options.concurrency ?? 3), 1, 8);
+    this.concurrency = clamp(Math.floor(options.concurrency ?? 12), 1, 12);
+    this.effectiveConcurrency = this.concurrency;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   }
@@ -455,29 +450,142 @@ export class AiClassifier {
     };
   }
 
+  private wakePermitWaiters() {
+    for (const wake of this.permitWaiters) wake();
+    this.permitWaiters.clear();
+  }
+
+  private throwIfStopped() {
+    if (this.stopped) throw this.stopped.error;
+  }
+
+  /** Reject queued work after a fatal failure while already sent requests finish and save results. */
+  private stopNewRequests(error: unknown) {
+    if (this.stopped) return;
+    this.stopped = {error};
+    this.resolveStop?.();
+    this.wakePermitWaiters();
+  }
+
+  private async waitUnlessStopped(milliseconds: number) {
+    this.throwIfStopped();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const delay = this.options.sleep ? this.sleep(milliseconds)
+      : new Promise<void>((resolve) => {timer = setTimeout(resolve, milliseconds);});
+    try {
+      await Promise.race([delay, this.stopSignal!]);
+      this.throwIfStopped();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** A provider throttle pauses both stages, rather than letting other workers retry into it. */
+  private registerRateLimit(error: AiRequestError) {
+    if (this.stopped) return;
+    if (!this.rateLimitUntil) {
+      this.effectiveConcurrency = Math.max(1, Math.floor(this.effectiveConcurrency / 2));
+    }
+    this.healthyRequests = 0;
+    this.rateLimitUntil = Math.max(this.rateLimitUntil, Date.now() + retryDelayMs(error, 0));
+    this.rateLimitRevision += 1;
+    this.wakePermitWaiters();
+  }
+
+  private async waitForSharedCooldown() {
+    this.throwIfStopped();
+    while (this.rateLimitUntil) {
+      if (!this.sharedCooldown) {
+        const until = this.rateLimitUntil;
+        const revision = this.rateLimitRevision;
+        const id = Symbol();
+        this.retryWaits.set(id, until);
+        this.sharedCooldown = (async () => {
+          try {
+            await this.publishActivity?.();
+            await this.waitUnlessStopped(Math.max(0, until - Date.now()));
+          } finally {
+            this.retryWaits.delete(id);
+            // An overlapping 429 may extend the deadline while the shared wait is running.
+            if (revision === this.rateLimitRevision) this.rateLimitUntil = 0;
+            this.sharedCooldown = undefined;
+            this.wakePermitWaiters();
+            await this.publishActivity?.();
+          }
+        })();
+      }
+      await this.sharedCooldown;
+      this.throwIfStopped();
+    }
+  }
+
+  private async acquireRequestPermit(count: number) {
+    while (true) {
+      await this.waitForSharedCooldown();
+      this.throwIfStopped();
+      if (this.rateLimitUntil) continue;
+      if (this.activeRequests.size < this.effectiveConcurrency) {
+        const id = Symbol();
+        this.activeRequests.set(id, {count, startedAt: Date.now()});
+        return id;
+      }
+      await new Promise<void>((resolve) => {this.permitWaiters.add(resolve);});
+    }
+  }
+
+  private recordHealthyRequest() {
+    if (this.stopped || this.rateLimitUntil || this.effectiveConcurrency >= this.concurrency) return;
+    if (++this.healthyRequests >= Math.max(8, this.effectiveConcurrency * 2)) {
+      // Recover one slot at a time after sustained success instead of repeating a burst.
+      this.effectiveConcurrency += 1;
+      this.healthyRequests = 0;
+      this.wakePermitWaiters();
+    }
+  }
+
   private async sendRequest(
     kind: 'triage' | 'detail',
     batch: OpinionTask[],
-    directBody: Record<string, unknown>
+    directBody: Record<string, unknown>,
+    attempt: number
   ) {
-    const id = Symbol();
-    this.activeRequests.set(id, {count: batch.length, startedAt: Date.now()});
+    const id = await this.acquireRequestPermit(batch.length);
     try {
       await this.publishActivity?.();
-      return await this.performRequest(kind, batch, directBody);
+      this.throwIfStopped();
+      const result = await this.performRequest(kind, batch, directBody);
+      if (kind === 'detail') this.recordUsage(result.usage, 'detail');
+      const detailResults = kind === 'detail' ? this.parseDetailResults(result.text, batch) : undefined;
+      this.recordHealthyRequest();
+      return {...result, detailResults};
+    } catch (error) {
+      if (kind === 'detail' && (!isRetryable(error) || attempt === 5)
+        && (!isBatchReducible(error) || batch.length === 1)) {
+        // Set the stop flag before releasing this permit and waking queued workers.
+        this.stopNewRequests(error);
+      }
+      throw error;
     } finally {
       this.activeRequests.delete(id);
+      this.wakePermitWaiters();
       await this.publishActivity?.();
     }
   }
 
   private async waitBeforeRetry(error: unknown, attempt: number) {
+    this.throwIfStopped();
     const delayMs = retryDelayMs(error, attempt);
+    if (error instanceof AiRequestError && error.rateLimited) {
+      this.rateLimitUntil = Math.max(this.rateLimitUntil, Date.now() + delayMs);
+      this.rateLimitRevision += 1;
+      await this.waitForSharedCooldown();
+      return;
+    }
     const id = Symbol();
     this.retryWaits.set(id, Date.now() + delayMs);
     try {
       await this.publishActivity?.();
-      await this.sleep(delayMs);
+      await this.waitUnlessStopped(delayMs);
     } finally {
       this.retryWaits.delete(id);
       await this.publishActivity?.();
@@ -525,10 +633,13 @@ export class AiClassifier {
         : usingProxy
           ? value.message || `服务器分析请求失败（HTTP ${response.status}）。`
           : value.error?.message || `OpenAI API 请求失败（HTTP ${response.status}）。`;
-      throw new AiRequestError(message,
+      const error = new AiRequestError(message,
         code !== 'insufficient_quota' && (response.status === 429 || response.status >= 500),
         Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
-        response.status === 502 || response.status === 504);
+        response.status === 502 || response.status === 504,
+        response.status === 429 && code !== 'insufficient_quota');
+      if (error.rateLimited) this.registerRateLimit(error);
+      throw error;
     }
     if (usingProxy) {
       const expectedPromptVersion = kind === 'triage' ? AI_TRIAGE_VERSION : AI_PROMPT_VERSION;
@@ -580,6 +691,23 @@ export class AiClassifier {
     return createHash('sha256').update(value).digest('hex');
   }
 
+  private parseDetailResults(text: string, batch: OpinionTask[]) {
+    if (!text) throw new AiBatchValidationError('OpenAI API 没有返回可解析的分类结果。');
+    let parsed: {results?: AiResult[]};
+    try {
+      parsed = JSON.parse(text) as {results?: AiResult[]};
+    } catch {
+      throw new AiBatchValidationError('AI 分类结果不是有效 JSON。');
+    }
+    if (!Array.isArray(parsed.results)) throw new AiBatchValidationError('AI 分类结果缺少 results 数组。');
+    const expected = new Set(batch.map((item) => item.opinion.id));
+    const returned = new Set(parsed.results.map((item) => item.opinionId));
+    if (parsed.results.length !== batch.length || returned.size !== expected.size || [...expected].some((id) => !returned.has(id))) {
+      throw new AiBatchValidationError('AI 分类结果与请求的意见 ID 不一致。');
+    }
+    return parsed.results;
+  }
+
   private async request(batch: OpinionTask[]): Promise<AiResult[]> {
     const body = {
       model: this.model,
@@ -605,23 +733,8 @@ export class AiClassifier {
     let lastError: unknown;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       try {
-        const value = await this.sendRequest('detail', batch, body);
-        this.recordUsage(value.usage, 'detail');
-        const text = value.text;
-        if (!text) throw new AiBatchValidationError('OpenAI API 没有返回可解析的分类结果。');
-        let parsed: {results?: AiResult[]};
-        try {
-          parsed = JSON.parse(text) as {results?: AiResult[]};
-        } catch {
-          throw new AiBatchValidationError('AI 分类结果不是有效 JSON。');
-        }
-        if (!Array.isArray(parsed.results)) throw new AiBatchValidationError('AI 分类结果缺少 results 数组。');
-        const expected = new Set(batch.map((item) => item.opinion.id));
-        const returned = new Set(parsed.results.map((item) => item.opinionId));
-        if (parsed.results.length !== batch.length || returned.size !== expected.size || [...expected].some((id) => !returned.has(id))) {
-          throw new AiBatchValidationError('AI 分类结果与请求的意见 ID 不一致。');
-        }
-        return parsed.results;
+        const value = await this.sendRequest('detail', batch, body, attempt);
+        return value.detailResults!;
       } catch (error) {
         lastError = error;
         if (!isRetryable(error) || attempt === 5) break;
@@ -637,7 +750,7 @@ export class AiClassifier {
     let lastError: unknown;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       try {
-        const value = await this.sendRequest('triage', batch, body);
+        const value = await this.sendRequest('triage', batch, body, attempt);
         this.recordUsage(value.usage, 'triage');
         const text = value.text;
         if (!text) throw new AiBatchValidationError('OpenAI API 没有返回可解析的初筛结果。');
@@ -663,26 +776,31 @@ export class AiClassifier {
     throw lastError;
   }
 
-  private async requestResilient(batch: OpinionTask[]): Promise<AiResult[]> {
+  private async requestResilient(
+    batch: OpinionTask[],
+    onResults: (results: AiResult[], batch: OpinionTask[]) => Promise<void>
+  ): Promise<void> {
+    let results: AiResult[];
     try {
-      return await this.request(batch);
+      results = await this.request(batch);
     } catch (error) {
-      const reducible = error instanceof AiBatchValidationError
-        || (error instanceof AiRequestError && error.batchReducible)
-        || (error instanceof Error && error.name === 'TimeoutError');
-      if (!reducible || batch.length === 1) throw error;
+      if (this.stopped || !isBatchReducible(error) || batch.length === 1) throw error;
       const midpoint = Math.ceil(batch.length / 2);
       // Keep split retries inside the configured concurrency limit.
-      const left = await this.requestResilient(batch.slice(0, midpoint));
-      const right = await this.requestResilient(batch.slice(midpoint));
-      return [...left, ...right];
+      // Commit successful halves immediately, even if a later half fails and the run resumes.
+      await this.requestResilient(batch.slice(0, midpoint), onResults);
+      await this.requestResilient(batch.slice(midpoint), onResults);
+      return;
     }
+    // Storage/progress failures must never cause an already successful provider call to repeat.
+    await onResults(results, batch);
   }
 
   private async requestTriageResilient(batch: OpinionTask[]): Promise<AiTriageResult[]> {
     try {
       return await this.requestTriage(batch);
     } catch {
+      this.throwIfStopped();
       return batch.map((task) => uncertainTriage(task.opinion.id, 'decisions_unavailable'));
     }
   }
@@ -813,6 +931,12 @@ export class AiClassifier {
     onProgress?: (progress: AiClassificationProgress, newRecords: AiClassificationCacheRecord[]) => Promise<void>
   ): Promise<AiClassificationOutput> {
     this.usage = emptyUsage();
+    this.effectiveConcurrency = this.concurrency;
+    this.healthyRequests = 0;
+    this.rateLimitUntil = 0;
+    this.rateLimitRevision = 0;
+    this.stopped = undefined;
+    this.stopSignal = new Promise<void>((resolve) => {this.resolveStop = resolve;});
     const contentById = new Map(contents.map((item) => [item.id, item]));
     const textBySourceId = new Map(opinions
       .filter((item) => item.sourceRecordId)
@@ -842,23 +966,28 @@ export class AiClassifier {
     const activity: AiAnalysisActivity = {
       stage: 'preparing', screened: 0, screeningTotal: 0, detailed: 0, detailTotal: 0,
       inFlightRequests: 0, inFlightOpinions: 0, retryingRequests: 0,
+      cached: cachedCount, localExcluded: 0, creatorExcluded: 0, noiseExcluded: 0, triageSkipped: 0,
+      configuredConcurrency: this.concurrency, effectiveConcurrency: this.effectiveConcurrency,
       startedAt: new Date().toISOString()
     };
     let progressQueue = Promise.resolve();
     const publish = (records: AiClassificationCacheRecord[] = []) => {
       const requests = [...this.activeRequests.values()];
       const retries = [...this.retryWaits.values()];
+      const nextRetryAt = retries.length
+        ? Math.max(this.rateLimitUntil, Math.min(...retries)) : this.rateLimitUntil;
       // Capture each update before awaiting writes so concurrent workers cannot reorder counters.
       const progress: AiClassificationProgress = {
         completed, total: cachedCount + pending.length, cached: cachedCount,
         activity: {
           ...activity,
+          effectiveConcurrency: this.effectiveConcurrency,
           inFlightRequests: requests.length,
           inFlightOpinions: requests.reduce((sum, request) => sum + request.count, 0),
-          retryingRequests: retries.length,
+          retryingRequests: retries.length || (this.rateLimitUntil ? 1 : 0),
           oldestRequestStartedAt: requests.length
             ? new Date(Math.min(...requests.map((request) => request.startedAt))).toISOString() : undefined,
-          nextRetryAt: retries.length ? new Date(Math.min(...retries)).toISOString() : undefined
+          nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : undefined
         }
       };
       const operation = progressQueue.then(() => onProgress?.(progress, records));
@@ -890,6 +1019,9 @@ export class AiClassifier {
           inputHash: task.inputHash,
           classification: this.skippedClassification(task.opinion.id, reason, {local: true})
         });
+        activity.localExcluded! += 1;
+        if (reason === 'creator_view_excluded_from_comment_analysis') activity.creatorExcluded! += 1;
+        else activity.noiseExcluded! += 1;
       }
       await persist(localRecords);
 
@@ -899,9 +1031,10 @@ export class AiClassifier {
       activity.screeningTotal = triagePending.length;
       await publish();
       const triageBatches = chunks(triagePending, Math.min(50, Math.max(30, this.batchSize * 4)));
-      await processBatches(triageBatches, this.concurrency, async (batch) => {
+      const screenBatch = async (batch: OpinionTask[]) => {
         const results = await this.requestTriageResilient(batch);
         activity.screened += batch.length;
+        if (activity.screened === activity.screeningTotal) activity.stage = 'detail';
         activity.lastResultAt = new Date().toISOString();
         const taskById = new Map(batch.map((item) => [item.opinion.id, item]));
         const skipped: AiClassificationCacheRecord[] = [];
@@ -910,8 +1043,10 @@ export class AiClassifier {
           if (!task) throw new Error(`AI 初筛返回了未知意见 ID：${result.opinionId}`);
           if (result.decision !== 'skip') {
             detailPending.push(task);
+            activity.detailTotal += 1;
           } else {
             fastTriageSkippedCount += 1;
+            activity.triageSkipped = fastTriageSkippedCount;
             skipped.push({
               opinionId: task.opinion.id,
               inputHash: task.inputHash,
@@ -924,30 +1059,53 @@ export class AiClassifier {
         }
         if (skipped.length) await persist(skipped);
         else await publish();
-      });
-
-      const grouped = new Map<string, OpinionTask[]>();
-      for (const task of detailPending) {
-        const group = grouped.get(task.content.id) ?? [];
-        group.push(task);
-        grouped.set(task.content.id, group);
-      }
-      const batches = [...grouped.values()].flatMap((items) => chunks(items, this.batchSize));
-      activity.stage = 'detail';
-      activity.detailTotal = detailPending.length;
-      await publish();
-      await processBatches(batches, this.concurrency, async (batch) => {
-        const results = await this.requestResilient(batch);
-        const taskById = new Map(batch.map((item) => [item.opinion.id, item]));
-        const records = results.map((result) => {
-          const task = taskById.get(result.opinionId);
-          if (!task) throw new Error(`AI 返回了未知意见 ID：${result.opinionId}`);
-          const classification = this.classification(result, task.opinion);
-          return {opinionId: result.opinionId, inputHash: task.inputHash, classification};
+      };
+      const detailBatch = async (batch: OpinionTask[]) => {
+        await this.requestResilient(batch, async (results, completedBatch) => {
+          const taskById = new Map(completedBatch.map((item) => [item.opinion.id, item]));
+          const records = results.map((result) => {
+            const task = taskById.get(result.opinionId);
+            if (!task) throw new Error(`AI 返回了未知意见 ID：${result.opinionId}`);
+            const classification = this.classification(result, task.opinion);
+            return {opinionId: result.opinionId, inputHash: task.inputHash, classification};
+          });
+          activity.detailed += records.length;
+          await persist(records);
         });
-        activity.detailed += records.length;
-        await persist(records);
-      });
+      };
+
+      // Each item carries its own content and parent context, so full batches can span sources.
+      // Prefer ready detail work while other screening requests are still running.
+      let nextTriage = 0;
+      let failed = false;
+      let firstError: unknown;
+      const activeBatches = new Set<Promise<void>>();
+      const schedule = (process: () => Promise<void>) => {
+        const operation = process().catch((error: unknown) => {
+          if (!failed) firstError = error;
+          failed = true;
+          this.stopNewRequests(error);
+        }).finally(() => {activeBatches.delete(operation);});
+        activeBatches.add(operation);
+      };
+      while (true) {
+        while (!failed && activeBatches.size < this.concurrency) {
+          const screeningFinished = activity.screened === activity.screeningTotal;
+          if (detailPending.length >= this.batchSize || (screeningFinished && detailPending.length > 0)) {
+            const batch = detailPending.splice(0, this.batchSize);
+            schedule(() => detailBatch(batch));
+          } else if (nextTriage < triageBatches.length) {
+            const batch = triageBatches[nextTriage++];
+            schedule(() => screenBatch(batch));
+          } else break;
+        }
+        if (activeBatches.size === 0) break;
+        // Every scheduled task handles its rejection; a failure drains in-flight cache writes.
+        await Promise.race(activeBatches);
+      }
+      if (failed) throw firstError;
+      activity.stage = 'detail';
+      await publish();
       return {
         classifications: opinions.flatMap((item) => {
           const classification = classifications.get(item.id);
@@ -957,7 +1115,7 @@ export class AiClassifier {
         cachedCount,
         localHardNoiseCount: localRecords.length,
         fastTriageSkippedCount,
-        detailedCount: detailPending.length,
+        detailedCount: activity.detailTotal,
         usage: {
           ...this.usage,
           pricing: this.usage.pricing ? {...this.usage.pricing} : undefined
@@ -967,6 +1125,11 @@ export class AiClassifier {
       this.publishActivity = undefined;
       this.activeRequests.clear();
       this.retryWaits.clear();
+      this.rateLimitUntil = 0;
+      this.sharedCooldown = undefined;
+      this.resolveStop = undefined;
+      this.stopSignal = undefined;
+      this.wakePermitWaiters();
     }
   }
 }

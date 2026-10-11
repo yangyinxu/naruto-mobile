@@ -43,7 +43,7 @@ export const normalizeResearchRequest = (value: unknown): ResearchRequest => {
     includeDynamics,
     mode,
     browserVisible: source.browserVisible !== false,
-    browserWindowCount: normalizedInteger(source.browserWindowCount ?? 1, '并行窗口数', 1, 4),
+    browserWindowCount: normalizedInteger(source.browserWindowCount ?? 4, '并行窗口数', 1, 8),
     maxSources: normalizedInteger(source.maxSources ?? 20, '最大来源数', 3, 200)
   };
 };

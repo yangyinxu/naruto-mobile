@@ -10,16 +10,18 @@ test('normalizes the beginner defaults and deduplicates keywords', () => {
   assert.equal(request.contentWindowDays, 30);
   assert.deepEqual(request.keywords, ['火影忍者手游', '决斗场']);
   assert.equal(request.mode, 'live');
-  assert.equal(request.browserWindowCount, 1);
+  assert.equal(request.browserWindowCount, 4);
 });
 
 test('rejects empty sources and unsafe time bounds', () => {
   assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], includeVideos: false, includeDynamics: false}), RequestValidationError);
   assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], durationMinutes: 0}), /采集时间/);
-  assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: 5}), /并行窗口数/);
+  assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: 9}), /并行窗口数/);
 });
 
-test('accepts up to four parallel browser windows', () => {
-  const request = normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: 4});
-  assert.equal(request.browserWindowCount, 4);
+test('accepts eight parallel browser windows and retains older explicit window counts', () => {
+  for (const count of [1, 2, 3, 4, 8]) {
+    const request = normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: count});
+    assert.equal(request.browserWindowCount, count);
+  }
 });

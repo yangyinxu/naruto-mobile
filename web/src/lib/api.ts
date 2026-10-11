@@ -1,6 +1,7 @@
 import {
   AppSettings,
   ChromeConnectionStatus,
+  KeywordSettings,
   ReportData,
   ResearchRequest,
   RunEvent,
@@ -20,6 +21,9 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
 
 export const api = {
   settings: () => request<AppSettings>('/api/settings'),
+  saveKeywords: (settings: KeywordSettings) => request<KeywordSettings>('/api/settings/keywords', {
+    method: 'PUT', body: JSON.stringify(settings)
+  }),
   loginAnalysis: (identifier: string, password: string) => request<{
     signedIn: true;
     account: {userId: string; email: string; role: 'admin' | 'user'};

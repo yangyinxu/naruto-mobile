@@ -1,12 +1,81 @@
 import {randomUUID} from 'node:crypto';
-import {mkdir, rename, writeFile} from 'node:fs/promises';
+import {mkdir, rename, rm, writeFile} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {dirname, isAbsolute, join, resolve} from 'node:path';
+import {RequestValidationError} from '../domain/validation';
 
-interface LocalSettings {
-  dataRoot?: string;
+export interface KeywordSettings {
+  keywords: string[];
+  useKeywordPrefix: boolean;
 }
+
+interface LocalSettings extends Record<string, unknown> {
+  dataRoot?: string;
+  keywordSettings?: KeywordSettings;
+}
+
+const settingsWrites = new Map<string, Promise<unknown>>();
+const gamePrefix = /^火影(?:忍者)?手游/u;
+
+const readSettings = (settingsPath: string): LocalSettings => {
+  try {
+    const value: unknown = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as LocalSettings : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeKeywordSettings = (value: unknown): KeywordSettings => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RequestValidationError('关键词设置格式不正确。');
+  }
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.keywords) || source.keywords.some((keyword) => typeof keyword !== 'string')) {
+    throw new RequestValidationError('请提供 1 到 12 个文字关键词。');
+  }
+  const keywords = [...new Set((source.keywords as string[]).map((keyword) => keyword.trim()).filter(Boolean))];
+  if (keywords.length === 0 || keywords.length > 12) {
+    throw new RequestValidationError('请提供 1 到 12 个调查关键词。');
+  }
+  if (keywords.some((keyword) => keyword.length > 40)) {
+    throw new RequestValidationError('单个关键词不能超过 40 个字符。');
+  }
+  if (source.useKeywordPrefix !== undefined && typeof source.useKeywordPrefix !== 'boolean') {
+    throw new RequestValidationError('关键词前缀开关必须为开启或关闭。');
+  }
+  const useKeywordPrefix = source.useKeywordPrefix ?? true;
+  if (useKeywordPrefix && keywords.some((keyword) => !gamePrefix.test(keyword) && `火影手游 ${keyword}`.length > 40)) {
+    throw new RequestValidationError('添加前缀后的实际搜索词不能超过 40 个字符。');
+  }
+  return {keywords, useKeywordPrefix: useKeywordPrefix as boolean};
+};
+
+const updateSettings = <T>(settingsPath: string, update: (settings: LocalSettings) => {settings: LocalSettings; result: T}): Promise<T> => {
+  const normalizedPath = resolve(settingsPath);
+  const queueKey = process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath;
+  const previousWrite = settingsWrites.get(queueKey) ?? Promise.resolve();
+  const nextWrite = previousWrite.catch(() => undefined).then(async () => {
+    const {settings, result} = update(readSettings(normalizedPath));
+    const temporaryPath = `${normalizedPath}.${randomUUID()}.tmp`;
+    await mkdir(dirname(normalizedPath), {recursive: true});
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+      await rename(temporaryPath, normalizedPath);
+    } catch (error) {
+      await rm(temporaryPath, {force: true}).catch(() => undefined);
+      throw error;
+    }
+    return result;
+  });
+  settingsWrites.set(queueKey, nextWrite);
+  const clearWrite = () => {
+    if (settingsWrites.get(queueKey) === nextWrite) settingsWrites.delete(queueKey);
+  };
+  void nextWrite.then(clearWrite, clearWrite);
+  return nextWrite;
+};
 
 export const dataRootSettingsPath = () => {
   const base = process.platform === 'win32'
@@ -16,21 +85,25 @@ export const dataRootSettingsPath = () => {
 };
 
 export const readSavedDataRoot = (settingsPath = dataRootSettingsPath()) => {
-  try {
-    const value = JSON.parse(readFileSync(settingsPath, 'utf8')) as LocalSettings;
-    const saved = value.dataRoot?.trim();
-    return saved && isAbsolute(saved) ? resolve(saved) : undefined;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    return undefined;
-  }
+  const value = readSettings(settingsPath);
+  const saved = typeof value.dataRoot === 'string' ? value.dataRoot.trim() : undefined;
+  return saved && isAbsolute(saved) ? resolve(saved) : undefined;
 };
 
 export const saveDataRoot = async (dataRoot: string, settingsPath = dataRootSettingsPath()) => {
   const normalized = resolve(dataRoot);
-  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
-  await mkdir(dirname(settingsPath), {recursive: true});
-  await writeFile(temporaryPath, `${JSON.stringify({dataRoot: normalized}, null, 2)}\n`, 'utf8');
-  await rename(temporaryPath, settingsPath);
-  return normalized;
+  return updateSettings(settingsPath, (settings) => ({settings: {...settings, dataRoot: normalized}, result: normalized}));
+};
+
+export const readSavedKeywords = (settingsPath = dataRootSettingsPath()): KeywordSettings | undefined => {
+  try {
+    return normalizeKeywordSettings(readSettings(settingsPath).keywordSettings);
+  } catch {
+    return undefined;
+  }
+};
+
+export const saveKeywords = async (preferences: unknown, settingsPath = dataRootSettingsPath()): Promise<KeywordSettings> => {
+  const normalized = normalizeKeywordSettings(preferences);
+  return updateSettings(settingsPath, (settings) => ({settings: {...settings, keywordSettings: normalized}, result: normalized}));
 };

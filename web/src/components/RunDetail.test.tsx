@@ -92,4 +92,30 @@ describe('RunDetail', () => {
     expect(screen.getByText('Luna 分析')).toHaveClass('active');
     expect(screen.getByRole('button', {name: '继续分析并生成报告'})).toBeEnabled();
   });
+
+  it('labels overall counts and the weighted percentage separately from deep analysis', () => {
+    render(<RunDetail initial={run} onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
+    expect(screen.getByText('分析总处理：544/651 条记录已有最终分类（含缓存与排除项）')).toBeInTheDocument();
+    expect(screen.getByText(/四个阶段各占 25%/)).toBeInTheDocument();
+    expect(screen.getByText(/不能用来估计剩余时间/)).toBeInTheDocument();
+    expect(screen.getByText('原始采集记录')).toBeInTheDocument();
+    expect(screen.getByText(/不是玩家人数/)).toBeInTheDocument();
+    expect(screen.getByText(/旧版进度没有保存初筛/)).toBeInTheDocument();
+  });
+
+  it('reconciles completed raw cleaning and final routing counts and labels cached results as a subset', () => {
+    const completed: RunManifest = {...run, state: 'completed', reportReady: true,
+      counts: {...run.counts, opinions: 1408, validOpinions: 40},
+      progress: {phase: 'completed'},
+      analysis: {mode: 'ai', classifierVersion: 'v4', completedAt: run.updatedAt, strongOpinions: 42,
+        weakOpinions: 100, noiseOpinions: 1195, processedOpinions: 1406, duplicateOpinions: 2,
+        cleaningExcludedOpinions: 0, missingContentOpinions: 0, creatorViewsExcluded: 69, localHardNoise: 3,
+        fastTriageSkipped: 42, detailedAiOpinions: 1292, cachedAiOpinions: 100}};
+    render(<RunDetail initial={completed} onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
+    expect(screen.getByText('原始记录 1408 = 清理去重后的已分类记录 1406 + 重复记录 2 + 其他清理排除 0 + 缺少来源的记录 0。')).toBeInTheDocument();
+    expect(screen.getByText('已分类记录 1406 = 作者观点排除 69 + 本地无信息排除 3 + Decisions 跳过 42 + Luna 详析 1292。')).toBeInTheDocument();
+    expect(screen.getByText('已分类观众记录 1337 = 强洞察 42 + 弱信号 100 + 无参考价值 1195。')).toBeInTheDocument();
+    expect(screen.getByText(/报告采用 40 条/)).toBeInTheDocument();
+    expect(screen.getByText(/复用缓存 100 条.*不能再加/)).toBeInTheDocument();
+  });
 });

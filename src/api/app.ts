@@ -7,7 +7,7 @@ import {normalizeResearchRequest, RequestValidationError} from '../domain/valida
 import {buildReportData} from '../processing/reporter';
 import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../services/chromeSettings';
 import {chooseDataDirectory} from '../services/dataDirectoryPicker';
-import {saveDataRoot} from '../services/dataRootSettings';
+import {readSavedKeywords, saveDataRoot, saveKeywords} from '../services/dataRootSettings';
 import {RESEARCH_API_VERSION, RESEARCH_APP_ID} from '../services/existingInstance';
 import {RunManager} from '../services/runManager';
 
@@ -35,6 +35,8 @@ const mutationOriginGuard = (config: AppConfig) => (request: Request, response: 
 interface AppDependencies {
   chooseDataDirectory: typeof chooseDataDirectory;
   saveDataRoot: typeof saveDataRoot;
+  readSavedKeywords: typeof readSavedKeywords;
+  saveKeywords: typeof saveKeywords;
   webRoot: string;
 }
 
@@ -45,6 +47,8 @@ export const createApp = (
 ) => {
   const openDataDirectoryPicker = dependencies.chooseDataDirectory ?? chooseDataDirectory;
   const persistDataRoot = dependencies.saveDataRoot ?? saveDataRoot;
+  const readKeywords = dependencies.readSavedKeywords ?? readSavedKeywords;
+  const persistKeywords = dependencies.saveKeywords ?? saveKeywords;
   const analysisTransport = () => config.analysisTransport ?? (config.openAiApiKey ? 'direct' : 'proxy');
   const app = express();
   app.disable('x-powered-by');
@@ -65,7 +69,9 @@ export const createApp = (
     app: RESEARCH_APP_ID,
     apiVersion: RESEARCH_API_VERSION
   }));
-  app.get('/api/settings', (_request, response) => response.json({
+  app.get('/api/settings', (_request, response) => {
+    const keywordSettings = readKeywords() ?? {keywords: ['火影忍者手游', '决斗场', '高招'], useKeywordPrefix: true};
+    response.json({
     apiVersion: RESEARCH_API_VERSION,
     dataRoot: config.dataRoot,
     dataRootLocked: Boolean(process.env.RESEARCH_DATA_DIR?.trim()),
@@ -77,20 +83,27 @@ export const createApp = (
       transport: analysisTransport(),
       model: config.aiModel,
       reasoningEffort: config.aiReasoningEffort,
+      maxConcurrentRequests: config.aiConcurrency,
+      batchSize: Math.min(config.aiBatchSize, analysisTransport() === 'proxy' ? 10 : 50),
       liveMode: 'ai',
       demoMode: 'rule_demo'
     },
     defaults: {
       durationMinutes: 5,
       contentWindowDays: 30,
-      keywords: ['火影忍者手游', '火影手游决斗场', '火影手游高招'],
+      ...keywordSettings,
       includeVideos: true,
       includeDynamics: true,
       mode: 'live',
       browserVisible: true,
-      browserWindowCount: 1,
+      browserWindowCount: 4,
       maxSources: 20
     }
+    });
+  });
+  app.put('/api/settings/keywords', asyncRoute(async (request, response) => {
+    const saved = await persistKeywords(request.body);
+    response.json(saved);
   }));
   app.post('/api/analysis/login', asyncRoute(async (request, response) => {
     if (analysisTransport() !== 'proxy') {

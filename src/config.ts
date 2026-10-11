@@ -109,6 +109,6 @@ export const loadAppConfig = (): AppConfig => {
     aiModel: process.env.OPENAI_MODEL?.trim() || 'gpt-6-luna',
     aiReasoningEffort: reasoningEffort(process.env.OPENAI_REASONING_EFFORT),
     aiBatchSize: positiveInteger(process.env.OPENAI_BATCH_SIZE, 10),
-    aiConcurrency: positiveInteger(process.env.OPENAI_CONCURRENCY, 3)
+    aiConcurrency: Math.min(12, positiveInteger(process.env.OPENAI_CONCURRENCY, 12))
   };
 };

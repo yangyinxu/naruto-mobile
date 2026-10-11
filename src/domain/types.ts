@@ -25,6 +25,14 @@ export interface AiAnalysisActivity {
   screeningTotal: number;
   detailed: number;
   detailTotal: number;
+  /** Exclusive routes in this invocation; cached records are not counted again. */
+  cached?: number;
+  localExcluded?: number;
+  creatorExcluded?: number;
+  noiseExcluded?: number;
+  triageSkipped?: number;
+  effectiveConcurrency?: number;
+  configuredConcurrency?: number;
   inFlightRequests: number;
   inFlightOpinions: number;
   retryingRequests: number;
@@ -115,6 +123,11 @@ export interface RunManifest {
     creatorViewsExcluded?: number;
     fastTriageSkipped?: number;
     detailedAiOpinions?: number;
+    processedOpinions?: number;
+    duplicateOpinions?: number;
+    cleaningExcludedOpinions?: number;
+    missingContentOpinions?: number;
+    cachedAiOpinions?: number;
     usage?: AiTokenUsage;
   };
 }

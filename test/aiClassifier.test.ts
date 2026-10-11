@@ -70,6 +70,8 @@ test('keeps proxy detail batches within the server protocol limit', () => {
   });
 
   assert.equal(classifier.batchSize, 10);
+  assert.equal(classifier.concurrency, 12);
+  assert.equal(new AiClassifier({apiKey: 'test-key', concurrency: 99}).concurrency, 12);
 });
 
 test('publishes screening and in-flight progress before results, then commits concurrent batches monotonically', async () => {
@@ -134,7 +136,7 @@ test('exposes Retry-After waits without advancing completed results', async () =
   let attempts = 0;
   const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 1,
     sleep: async (milliseconds) => {
-      assert.equal(milliseconds, 60_000);
+      assert.ok(milliseconds >= 59_000 && milliseconds <= 60_000);
       const progress = updates.at(-1)!;
       assert.equal(progress.completed, 0);
       assert.equal(progress.activity?.retryingRequests, 1);
@@ -336,10 +338,271 @@ test('retains comments for detailed analysis after refused, malformed or exhaust
     assert.equal(seen.at(-1), 'https://api.openai.com/v1/responses');
     if (mode === 'rate-limit') {
       assert.equal(seen.length, 7);
-      assert.equal(delays.length, 5);
+      // The last screening 429 also pauses the first detail request globally.
+      assert.equal(delays.length, 6);
       assert.ok(delays[0] >= 2000);
     }
   }
+});
+
+test('pipelines full detail batches across sources before screening finishes, preserving per-item context', {timeout: 5_000}, async () => {
+  const opinions = Array.from({length: 80}, (_, index) => opinion({
+    id: `item-${index}`, contentId: `source-${index}`, sourceRecordId: `record-${index}`,
+    parentSourceRecordId: index ? `record-${index - 1}` : undefined,
+    text: `意见${index}：这个忍者二技能后摇太长，替身后完全无法反打`
+  }));
+  const contents = opinions.map((item) => ({...content, id: item.contentId, title: `标题${item.id}`}));
+  const releaseScreening: Array<() => void> = [];
+  const screeningGates = [0, 1].map(() => new Promise<void>((resolve) => {releaseScreening.push(resolve);}));
+  let screensStarted!: () => void;
+  const screensReady = new Promise<void>((resolve) => {screensStarted = resolve;});
+  let detailStarted!: () => void;
+  const detailReady = new Promise<void>((resolve) => {detailStarted = resolve;});
+  let releaseDetails!: () => void;
+  const detailGate = new Promise<void>((resolve) => {releaseDetails = resolve;});
+  const updates: AiClassificationProgress[] = [];
+  const detailSizes: number[] = [];
+  const detailedIds: string[] = [];
+  let screeningRequests = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 2, batchSize: 10,
+    fetchImpl: (async (url, init) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      try {
+        const batch = JSON.parse(JSON.parse(String(init?.body)).input).batch as Array<{
+          opinionId: string; content: {title: string}; opinion: {parentText: string | null}
+        }>;
+        if (String(url).endsWith('/decisions')) {
+          const requestIndex = screeningRequests++;
+          if (screeningRequests === 2) screensStarted();
+          await screeningGates[requestIndex];
+          return new Response(JSON.stringify(decisionsResponse(batch.map((item) => item.opinionId))));
+        }
+        detailStarted();
+        await detailGate;
+        detailSizes.push(batch.length);
+        for (const item of batch) {
+          const index = Number(item.opinionId.slice(5));
+          assert.equal(item.content.title, `标题${item.opinionId}`);
+          assert.equal(item.opinion.parentText, index ? opinions[index - 1].text : null);
+          detailedIds.push(item.opinionId);
+        }
+        return new Response(JSON.stringify({output_text: JSON.stringify({
+          results: batch.map(({opinionId}) => aiResult(opinionId, 'strong'))
+        })}));
+      } finally {active -= 1;}
+    }) as typeof fetch});
+  const pending = classifier.classifyAll(opinions, contents, [], async (progress) => {
+    assert.ok(progress.completed >= (updates.at(-1)?.completed ?? 0));
+    assert.ok(progress.activity!.detailTotal >= (updates.at(-1)?.activity?.detailTotal ?? 0));
+    updates.push(progress);
+  });
+  try {
+    await screensReady;
+    releaseScreening[0]();
+    await detailReady;
+    assert.equal(updates.at(-1)?.activity?.screened, 40);
+    assert.equal(updates.at(-1)?.activity?.screeningTotal, 80);
+    assert.equal(updates.at(-1)?.activity?.detailTotal, 40);
+    assert.equal(updates.at(-1)?.activity?.stage, 'triage');
+  } finally {
+    releaseScreening.forEach((release) => release());
+    releaseDetails();
+  }
+  const output = await pending;
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(detailSizes, Array(8).fill(10));
+  assert.equal(new Set(detailedIds).size, 80);
+  assert.deepEqual(output.classifications.map((item) => item.opinionId), opinions.map((item) => item.id));
+  assert.equal(output.newCacheRecords.length, 80);
+  assert.equal(output.detailedCount, 80);
+  assert.equal(updates.at(-1)?.activity?.screened, 80);
+  assert.equal(updates.at(-1)?.activity?.detailed, 80);
+});
+
+test('a 429 pauses every worker, halves permits, and restores slots only after sustained success', {timeout: 5_000}, async () => {
+  const opinions = Array.from({length: 15}, (_, index) => opinion({id: `rate-${index}`}));
+  const releases: Array<() => void> = [];
+  const gates = [0, 1, 2, 3].map(() => new Promise<void>((resolve) => {releases.push(resolve);}));
+  let initialStarted!: () => void;
+  const initialReady = new Promise<void>((resolve) => {initialStarted = resolve;});
+  let cooldownStarted!: () => void;
+  const cooldownReady = new Promise<void>((resolve) => {cooldownStarted = resolve;});
+  let releaseCooldown!: () => void;
+  const cooldownGate = new Promise<void>((resolve) => {releaseCooldown = resolve;});
+  const updates: AiClassificationProgress[] = [];
+  const requested: string[] = [];
+  const savedIds: string[] = [];
+  let active = 0;
+  let resumed = false;
+  let resumedSuccesses = 0;
+  let maximumResumedActive = 0;
+  let sleeps = 0;
+  const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 4, batchSize: 1,
+    sleep: async (milliseconds) => {
+      sleeps += 1;
+      assert.ok(milliseconds >= 59_000 && milliseconds <= 60_000);
+      cooldownStarted();
+      await cooldownGate;
+    },
+    fetchImpl: (async (url, init) => {
+      if (String(url).endsWith('/decisions')) {
+        return new Response(JSON.stringify(decisionsResponse(opinions.map((item) => item.id))));
+      }
+      const id = JSON.parse(JSON.parse(String(init?.body)).input).batch[0].opinionId as string;
+      const requestIndex = requested.length;
+      requested.push(id);
+      active += 1;
+      if (resumed) {
+        maximumResumedActive = Math.max(maximumResumedActive, active);
+        assert.ok(active <= (resumedSuccesses < 8 ? 2 : 3));
+      }
+      try {
+        if (requestIndex < 4) {
+          if (requestIndex === 3) initialStarted();
+          await gates[requestIndex];
+          if (requestIndex === 0) return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+        } else {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          resumedSuccesses += 1;
+        }
+        return new Response(JSON.stringify({output_text: JSON.stringify({results: [aiResult(id, 'strong')]})}));
+      } finally {active -= 1;}
+    }) as typeof fetch});
+  const pending = classifier.classifyAll(opinions, [content], [], async (progress, records) => {
+    updates.push(progress);
+    savedIds.push(...records.map((record) => record.opinionId));
+  });
+  try {
+    await initialReady;
+    releases[0]();
+    await cooldownReady;
+    assert.equal(updates.at(-1)?.activity?.effectiveConcurrency, 2);
+    assert.equal(updates.at(-1)?.activity?.retryingRequests, 1);
+    releases.slice(1).forEach((release) => release());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(requested.length, 4, 'Neither retries nor new batches may start during shared cooldown');
+    assert.equal(active, 0);
+    resumed = true;
+  } finally {
+    releases.forEach((release) => release());
+    releaseCooldown();
+  }
+  const output = await pending;
+  assert.equal(sleeps, 1);
+  assert.ok(maximumResumedActive <= 3);
+  assert.equal(updates.at(-1)?.activity?.effectiveConcurrency, 3);
+  assert.equal(updates.at(-1)?.activity?.configuredConcurrency, 4);
+  assert.equal(output.classifications.length, 15);
+  assert.equal(output.newCacheRecords.length, 15);
+  assert.equal(new Set(savedIds).size, 15);
+  assert.equal(savedIds.length, 15);
+  assert.equal(requested.filter((id) => id === 'rate-0').length, 2);
+});
+
+test('publishes exclusive cache, local exclusion, screening skip, and detail counters', async () => {
+  const cachedOpinion = opinion({id: 'cached'});
+  const cachedClassifier = new AiClassifier({apiKey: 'test-key', fetchImpl: (async (url) => (
+    new Response(JSON.stringify(String(url).endsWith('/decisions') ? decisionsResponse(['cached'])
+      : {output_text: JSON.stringify({results: [aiResult('cached', 'strong')]})}))
+  )) as typeof fetch});
+  const cached = await cachedClassifier.classifyAll([cachedOpinion], [content]);
+  const opinions = [cachedOpinion, opinion({id: 'creator', voiceType: 'creator'}),
+    opinion({id: 'symbols', text: '!!!'}), opinion({id: 'reaction', text: '666'}),
+    ...['skip-one', 'skip-two', 'detail-one', 'detail-two'].map((id) => opinion({id}))];
+  const updates: AiClassificationProgress[] = [];
+  const classifier = new AiClassifier({apiKey: 'test-key', fetchImpl: (async (url, init) => {
+    const batch = JSON.parse(JSON.parse(String(init?.body)).input).batch as Array<{opinionId: string}>;
+    const ids = batch.map((item) => item.opinionId);
+    assert.ok(!ids.includes('cached'));
+    if (String(url).endsWith('/decisions')) {
+      const response = decisionsResponse(ids);
+      response.answers = ids.flatMap((id) => decisionsResponse([id], id.startsWith('skip-')
+        ? {decision: 'skip', informationType: 'community_chatter'} : {}).answers);
+      return new Response(JSON.stringify(response));
+    }
+    return new Response(JSON.stringify({output_text: JSON.stringify({results: ids.map((id) => aiResult(id, 'strong'))})}));
+  }) as typeof fetch});
+  const output = await classifier.classifyAll(opinions, [content], cached.newCacheRecords, async (progress) => {
+    const activity = progress.activity!;
+    assert.equal(activity.localExcluded, activity.creatorExcluded! + activity.noiseExcluded!);
+    assert.equal(progress.completed, activity.cached! + activity.localExcluded! + activity.triageSkipped! + activity.detailed);
+    assert.ok(progress.completed >= (updates.at(-1)?.completed ?? 0));
+    updates.push(progress);
+  });
+  const final = updates.at(-1)!.activity!;
+  assert.equal(final.cached, 1);
+  assert.equal(final.localExcluded, 3);
+  assert.equal(final.creatorExcluded, 1);
+  assert.equal(final.noiseExcluded, 2);
+  assert.equal(final.triageSkipped, 2);
+  assert.equal(final.detailed, 2);
+  assert.equal(final.screened, 4);
+  assert.equal(output.fastTriageSkippedCount, 2);
+  assert.equal(output.localHardNoiseCount, 3);
+  assert.equal(output.detailedCount, 2);
+  assert.equal(output.newCacheRecords.length, 7);
+});
+
+test('overlapping 429 responses extend the shared deadline without reopening requests early', {timeout: 5_000}, async () => {
+  const opinions = Array.from({length: 4}, (_, index) => opinion({id: `overlap-${index}`}));
+  const releaseRequests: Array<() => void> = [];
+  const requestGates = opinions.map(() => new Promise<void>((resolve) => {releaseRequests.push(resolve);}));
+  const releaseSleeps: Array<() => void> = [];
+  const sleepGates = [0, 1].map(() => new Promise<void>((resolve) => {releaseSleeps.push(resolve);}));
+  const sleepStarted: Array<() => void> = [];
+  const sleepReady = [0, 1].map(() => new Promise<void>((resolve) => {sleepStarted.push(resolve);}));
+  let requestsStarted!: () => void;
+  const requestsReady = new Promise<void>((resolve) => {requestsStarted = resolve;});
+  let extended!: () => void;
+  const extendedReady = new Promise<void>((resolve) => {extended = resolve;});
+  const requested: string[] = [];
+  const delays: number[] = [];
+  const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 4, batchSize: 1,
+    sleep: async (milliseconds) => {
+      const index = delays.length;
+      delays.push(milliseconds);
+      assert.ok(index < 2);
+      sleepStarted[index]();
+      await sleepGates[index];
+    },
+    fetchImpl: (async (url, init) => {
+      if (String(url).endsWith('/decisions')) return new Response(JSON.stringify(decisionsResponse(opinions.map((item) => item.id))));
+      const id = JSON.parse(JSON.parse(String(init?.body)).input).batch[0].opinionId as string;
+      const index = requested.length;
+      requested.push(id);
+      if (index < 4) {
+        if (index === 3) requestsStarted();
+        await requestGates[index];
+        if (index < 2) return new Response('{}', {status: 429, headers: {'retry-after': index === 0 ? '2' : '10'}});
+      }
+      return new Response(JSON.stringify({output_text: JSON.stringify({results: [aiResult(id, 'strong')]})}));
+    }) as typeof fetch});
+  const pending = classifier.classifyAll(opinions, [content], [], async (progress) => {
+    if (Date.parse(progress.activity?.nextRetryAt ?? '') > Date.now() + 9_000) extended();
+  });
+  try {
+    await requestsReady;
+    releaseRequests[0]();
+    await sleepReady[0];
+    releaseRequests[1]();
+    await extendedReady;
+    releaseRequests.slice(2).forEach((release) => release());
+    releaseSleeps[0]();
+    await sleepReady[1];
+    assert.equal(requested.length, 4);
+    assert.ok(delays[0] >= 1_000 && delays[0] <= 2_000);
+    assert.ok(delays[1] >= 9_000 && delays[1] <= 10_000);
+  } finally {
+    releaseRequests.forEach((release) => release());
+    releaseSleeps.forEach((release) => release());
+  }
+  const output = await pending;
+  assert.equal(output.newCacheRecords.length, 4);
+  assert.equal(new Set(output.newCacheRecords.map((item) => item.opinionId)).size, 4);
+  assert.equal(requested.length, 6);
 });
 
 test('charges Decisions input and Responses cache writes at their distinct rates', async () => {
@@ -482,4 +745,111 @@ test('drains concurrent cache writes before failing, stops new batches, and reus
   const output = await resumed.classifyAll(opinions, [content], saved);
   assert.equal(output.cachedCount, 1);
   assert.equal(output.classifications.length, 3);
+});
+
+test('persists a successful split half before a later half fails, then resumes without reclassifying it', async () => {
+  const opinions = ['left', 'right'].map((id) => opinion({id}));
+  const saved: Awaited<ReturnType<AiClassifier['classifyAll']>>['newCacheRecords'] = [];
+  const updates: AiClassificationProgress[] = [];
+  const detailedBatches: string[][] = [];
+  const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 1,
+    fetchImpl: (async (url, init) => {
+      if (String(url).endsWith('/decisions')) return new Response(JSON.stringify(decisionsResponse(['left', 'right'])));
+      const batch = JSON.parse(JSON.parse(String(init?.body)).input).batch as Array<{opinionId: string}>;
+      const ids = batch.map((item) => item.opinionId);
+      detailedBatches.push(ids);
+      if (ids.length > 1) return new Response(JSON.stringify({output_text: 'invalid-json'}));
+      if (ids[0] === 'right') return new Response(JSON.stringify({error: {message: 'login required'}}), {status: 401});
+      return new Response(JSON.stringify({output_text: JSON.stringify({results: [aiResult(ids[0], 'strong')]})}));
+    }) as typeof fetch});
+  await assert.rejects(classifier.classifyAll(opinions, [content], [], async (progress, records) => {
+    updates.push(progress);
+    saved.push(...records);
+  }), /login required/);
+  assert.deepEqual(detailedBatches, [['left', 'right'], ['left'], ['right']]);
+  assert.deepEqual(saved.map((item) => item.opinionId), ['left']);
+  assert.equal(updates.at(-1)?.completed, 1);
+  assert.equal(updates.at(-1)?.activity?.detailed, 1);
+  assert.equal(updates.at(-1)?.activity?.inFlightRequests, 0);
+  const resumed = new AiClassifier({apiKey: 'test-key', fetchImpl: (async (url, init) => {
+    const ids = JSON.parse(JSON.parse(String(init?.body)).input).batch
+      .map((item: {opinionId: string}) => item.opinionId) as string[];
+    assert.deepEqual(ids, ['right']);
+    return new Response(JSON.stringify(String(url).endsWith('/decisions') ? decisionsResponse(ids)
+      : {output_text: JSON.stringify({results: ids.map((id) => aiResult(id, 'strong'))})}));
+  }) as typeof fetch});
+  const output = await resumed.classifyAll(opinions, [content], saved);
+  assert.equal(output.cachedCount, 1);
+  assert.equal(output.newCacheRecords.length, 1);
+  assert.deepEqual(output.classifications.map((item) => item.opinionId), ['left', 'right']);
+});
+
+test('fatal detail errors cancel queued permits and cooldowns while draining sent requests and cache writes', {timeout: 5_000}, async () => {
+  const opinions = Array.from({length: 8}, (_, index) => opinion({id: `halt-${index}`}));
+  const releaseRequests: Array<() => void> = [];
+  const requestGates = [0, 1, 2, 3].map(() => new Promise<void>((resolve) => {releaseRequests.push(resolve);}));
+  let initialStarted!: () => void;
+  const initialReady = new Promise<void>((resolve) => {initialStarted = resolve;});
+  let cooldownStarted!: () => void;
+  const cooldownReady = new Promise<void>((resolve) => {cooldownStarted = resolve;});
+  let releaseCooldown!: () => void;
+  const cooldownGate = new Promise<void>((resolve) => {releaseCooldown = resolve;});
+  let thirdSaved!: () => void;
+  const thirdReady = new Promise<void>((resolve) => {thirdSaved = resolve;});
+  let cacheWriteStarted!: () => void;
+  const cacheWriteReady = new Promise<void>((resolve) => {cacheWriteStarted = resolve;});
+  let releaseCacheWrite!: () => void;
+  const cacheWriteGate = new Promise<void>((resolve) => {releaseCacheWrite = resolve;});
+  const requested: string[] = [];
+  const saved: string[] = [];
+  const updates: AiClassificationProgress[] = [];
+  const classifier = new AiClassifier({apiKey: 'test-key', concurrency: 4, batchSize: 1,
+    sleep: async () => {cooldownStarted(); await cooldownGate;},
+    fetchImpl: (async (url, init) => {
+      if (String(url).endsWith('/decisions')) return new Response(JSON.stringify(decisionsResponse(opinions.map((item) => item.id))));
+      const id = JSON.parse(JSON.parse(String(init?.body)).input).batch[0].opinionId as string;
+      const index = requested.length;
+      requested.push(id);
+      assert.ok(index < 4, 'Queued requests must not be sent after a fatal failure');
+      if (index === 3) initialStarted();
+      await requestGates[index];
+      if (index === 0) return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+      if (index === 1) return new Response(JSON.stringify({error: {message: 'login required'}}), {status: 401});
+      return new Response(JSON.stringify({output_text: JSON.stringify({results: [aiResult(id, 'strong')]})}));
+    }) as typeof fetch});
+  let settled = false;
+  const pending = classifier.classifyAll(opinions, [content], [], async (progress, records) => {
+    updates.push(progress);
+    const ids = records.map((item) => item.opinionId);
+    saved.push(...ids);
+    if (ids.includes('halt-3')) thirdSaved();
+    if (ids.includes('halt-2')) {cacheWriteStarted(); await cacheWriteGate;}
+  }).then(() => {settled = true;}, (error) => {settled = true; throw error;});
+  const failed = assert.rejects(pending, /login required/);
+  try {
+    await initialReady;
+    releaseRequests[0]();
+    await cooldownReady;
+    releaseRequests[3]();
+    await thirdReady;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseRequests[1]();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'The sent request still owns the run');
+    assert.equal(requested.length, 4);
+    releaseRequests[2]();
+    await cacheWriteReady;
+    assert.equal(settled, false, 'The cache write must complete before the run fails');
+    releaseCacheWrite();
+    // No need to release the 60-second cooldown: a fatal error interrupts it.
+    await failed;
+  } finally {
+    releaseRequests.forEach((release) => release());
+    releaseCooldown();
+    releaseCacheWrite();
+    await failed;
+  }
+  assert.deepEqual(saved, ['halt-3', 'halt-2']);
+  assert.equal(requested.length, 4);
+  assert.equal(updates.at(-1)?.activity?.inFlightRequests, 0);
 });

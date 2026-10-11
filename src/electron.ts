@@ -150,9 +150,12 @@ const start = async () => {
     managerConfig.openAiApiKey = undefined;
     managerConfig.aiModel = 'gpt-6-luna';
     managerConfig.aiReasoningEffort = 'medium';
+    managerConfig.aiConcurrency = 12;
   }
   const preferredUrl = `http://${managerConfig.host}:${managerConfig.port}`;
-  if (await isResearchToolRunning(preferredUrl)) {
+  // Packaged releases must serve their bundled UI and AI configuration. An older
+  // source server may occupy this port while using another model or transport.
+  if (!electronApp.isPackaged && await isResearchToolRunning(preferredUrl)) {
     await openMainWindow(preferredUrl);
     return;
   }

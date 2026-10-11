@@ -102,6 +102,16 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
   const remainingMinutes = Math.floor(displayTimeMs / 60_000);
   const remainingSeconds = Math.floor((displayTimeMs % 60_000) / 1000);
   const isCurrentStageWorking = workingStates.has(run.state) && connection === 'connected';
+  const analysisProgress = run.progress?.phase === 'analyzing' ? run.progress : legacyAnalysisProgress(run.statusMessage);
+  const analysisStatus = runPhase === 'analyzing' && analysisProgress?.total !== undefined && analysisProgress.completed !== undefined
+    ? `分析总处理：${analysisProgress.completed}/${analysisProgress.total} 条记录已有最终分类（含缓存与排除项）`
+    : run.statusMessage;
+  const finalAnalysis = run.reportReady ? run.analysis : undefined;
+  const classifiedViewers = finalAnalysis ? finalAnalysis.strongOpinions + finalAnalysis.weakOpinions + finalAnalysis.noiseOpinions : undefined;
+  const rawBreakdownKnown = finalAnalysis && [finalAnalysis.processedOpinions, finalAnalysis.duplicateOpinions,
+    finalAnalysis.cleaningExcludedOpinions, finalAnalysis.missingContentOpinions].every((value) => typeof value === 'number');
+  const finalRoutesKnown = finalAnalysis?.mode === 'ai' && [finalAnalysis.processedOpinions, finalAnalysis.creatorViewsExcluded,
+    finalAnalysis.localHardNoise, finalAnalysis.fastTriageSkipped, finalAnalysis.detailedAiOpinions].every((value) => typeof value === 'number');
   const stageLineProgress = Math.min(100, Math.max(0, (currentPhaseRank - phaseRank.discovering) / 3 * 100));
   const stageClass = (phase: RunProgressPhase) => currentPhaseRank > phaseRank[phase]
     ? 'done'
@@ -131,7 +141,7 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
     <main className="run-page content-width">
       <button className="back-button" onClick={onBack}><ArrowLeft size={17}/> 返回历史调查</button>
       <section className="run-header">
-        <div><div className="eyebrow"><Radio size={14}/> {run.request.mode === 'demo' ? '本地规则演示' : `Luna AI 调查${run.analysis?.model ? ` · ${run.analysis.model}` : ''}`}</div><h1>{run.request.name}</h1><p className="run-status" aria-live="polite"><span>{run.statusMessage}</span>{isCurrentStageWorking && <span className="stage-activity" aria-label="当前步骤仍在进行中"><i/><i/><i/></span>}</p></div>
+        <div><div className="eyebrow"><Radio size={14}/> {run.request.mode === 'demo' ? '本地规则演示' : `Luna AI 调查${run.analysis?.model ? ` · ${run.analysis.model}` : ''}`}</div><h1>{run.request.name}</h1><p className="run-status" aria-live="polite"><span>{analysisStatus}</span>{isCurrentStageWorking && <span className="stage-activity" aria-label="当前步骤仍在进行中"><i/><i/><i/></span>}</p></div>
         <StatusBadge state={run.state} phase={runPhase} mode={run.request.mode}/>
       </section>
 
@@ -142,6 +152,7 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
         <div className="progress-area">
           <div className="progress-copy"><span>调查总进度</span><strong>{Math.round(progress)}%</strong></div>
           <div className="progress-track" role="progressbar" aria-label="调查总进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}><span style={{width: `${progress}%`}}/></div>
+          <p className="progress-scope">四个阶段各占 25%：发现来源、采集、分析、报告。采集按已用时 / 设定时长推进；分析按已有最终分类 / 本次分析记录推进；报告完成才到 100%。这是流程进度，不能用来估计剩余时间。</p>
           <div className="progress-stages">
             <div className="progress-stage-line" aria-hidden="true"><i style={{width: `${stageLineProgress}%`}}/></div>
             <span className={`progress-stage ${stageClass('discovering')}`}><Search/>发现热点</span>
@@ -155,14 +166,27 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
       {runPhase === 'analyzing' && run.progress?.activity && <AnalysisLiveProgress
         activity={run.progress.activity} working={run.state === 'processing'}
         connection={connection} updatedAt={run.updatedAt}
+        overallCompleted={analysisProgress?.completed} overallTotal={analysisProgress?.total}
       />}
 
+      {runPhase === 'analyzing' && !run.progress?.activity && <p className="count-scope-note">分析总处理统计已得到最终分类的记录，包含缓存、排除项和详析完成项；分母是清理去重后具有来源的记录。旧版进度没有保存初筛、详析与缓存分项，无法可靠还原。</p>}
+
       <section className="metric-grid">
-        <div className="metric-card"><Video/><span>已处理来源</span><strong>{run.counts.sources}</strong><small>发现 {run.counts.candidates} 个候选</small></div>
-        <div className="metric-card"><MessageSquareText/><span>已收集意见</span><strong>{run.counts.opinions}</strong><small>标题与观众意见分开</small></div>
-        <div className="metric-card"><FileText/><span>{run.request.mode === 'demo' ? '演示有效意见' : 'AI 强洞察'}</span><strong>{run.reportReady ? run.counts.validOpinions : '—'}</strong><small>{run.analysis ? `弱信号 ${run.analysis.weakOpinions} · 无价值 ${run.analysis.noiseOpinions}${run.analysis.detailedAiOpinions !== undefined ? ` · 详析 ${run.analysis.detailedAiOpinions}` : ''}` : '报告生成后显示'}</small></div>
-        <div className={`metric-card ${run.counts.warnings ? 'warning' : ''}`}><AlertTriangle/><span>采集提醒</span><strong>{run.counts.warnings}</strong><small>不会丢失已保存数据</small></div>
+        <div className="metric-card"><Video/><span>已保存来源</span><strong>{run.counts.sources}</strong><small>发现 {run.counts.candidates} 个候选；上方为成功保存的独立视频或动态页面，采集失败的候选不计入。</small></div>
+        <div className="metric-card"><MessageSquareText/><span>原始采集记录</span><strong>{run.counts.opinions}</strong><small>评论、回复、弹幕和作者观点合计；清理去重前的记录数，不是玩家人数。</small></div>
+        <div className="metric-card"><FileText/><span>{run.request.mode === 'demo' ? '演示采用意见' : '报告采用的观众意见'}</span><strong>{run.reportReady ? run.counts.validOpinions : '—'}</strong><small>{run.reportReady && run.analysis ? `强洞察 ${run.analysis.strongOpinions} · 弱信号 ${run.analysis.weakOpinions} · 无参考价值 ${run.analysis.noiseOpinions}；需要复核的强洞察不自动进入报告。` : '完成分析并生成报告后显示；不会把全部详析记录当作有效意见。'}</small></div>
+        <div className={`metric-card ${run.counts.warnings ? 'warning' : ''}`}><AlertTriangle/><span>采集提醒次数</span><strong>{run.counts.warnings}</strong><small>页面采集失败、未加载出评论等提醒的发生次数，不代表丢失记录数。</small></div>
       </section>
+
+      {finalAnalysis && <section className="analysis-count-summary" aria-label="完成分析数量口径">
+        <h2>完成后的数量如何对应</h2>
+        <p className="analysis-count-equation">已分类观众记录 {classifiedViewers} = 强洞察 {finalAnalysis.strongOpinions} + 弱信号 {finalAnalysis.weakOpinions} + 无参考价值 {finalAnalysis.noiseOpinions}。</p>
+        <p>这些是清理去重后的观众记录，作者观点另列。强洞察信息充分、有产品参考价值；弱信号保留但不进入结论；无参考价值被排除。报告采用 {run.counts.validOpinions} 条，采用数量可能少于强洞察，因为需要复核的结果不会自动入选。</p>
+        {rawBreakdownKnown ? <p className="analysis-count-equation">原始记录 {run.counts.opinions} = 清理去重后的已分类记录 {finalAnalysis.processedOpinions} + 重复记录 {finalAnalysis.duplicateOpinions} + 其他清理排除 {finalAnalysis.cleaningExcludedOpinions} + 缺少来源的记录 {finalAnalysis.missingContentOpinions}。</p>
+          : <p>这份旧版调查未保存完整的清理数量，无法从原始记录数可靠推算去重后的分析总数。</p>}
+        {finalRoutesKnown && <p className="analysis-count-equation">已分类记录 {finalAnalysis.processedOpinions} = 作者观点排除 {finalAnalysis.creatorViewsExcluded} + 本地无信息排除 {finalAnalysis.localHardNoise} + Decisions 跳过 {finalAnalysis.fastTriageSkipped} + Luna 详析 {finalAnalysis.detailedAiOpinions}。</p>}
+        {finalAnalysis.cachedAiOpinions !== undefined && <p>本次复用缓存 {finalAnalysis.cachedAiOpinions} 条。完成后的分流数量包含缓存记录原先的处理路径，因此缓存是其中的子集，不能再加到已分类总数上。</p>}
+      </section>}
 
       <section className="control-panel">
         <div className="control-copy"><h2>{run.reportReady ? '报告已经准备好' : resumeAnalysis ? '可以继续完成分析' : run.state === 'paused' ? '调查已安全暂停' : '你可以随时控制调查'}</h2><p>{run.reportReady ? '查看网页报告，或打开本地目录获取 Markdown 和 JSONL 文件。' : resumeAnalysis ? '继续使用已收集的意见，复用已保存的分析结果，完成后生成报告。' : '暂停会先完成当前页面并保存检查点；提前生成不会丢掉已有样本。'}</p></div>

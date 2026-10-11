@@ -1,4 +1,4 @@
-import {fireEvent, render, screen} from '@testing-library/react';
+import {fireEvent, render, screen, within} from '@testing-library/react';
 import {describe, expect, it, vi} from 'vitest';
 import {ReportData, ReportTopic, RunManifest} from '../types';
 import {ReportView} from './ReportView';
@@ -112,5 +112,21 @@ describe('ReportView', () => {
     fireEvent.click(screen.getByRole('button', {name: /忍者强度.*查看完整详情/}));
     expect(screen.getByText('忍者强度负向原文')).toBeInTheDocument();
     expect(screen.getAllByText('这是忍者强度的大体总结，说明主要观点与争议。')).toHaveLength(2);
+  });
+
+  it('distinguishes report eligible records, overlapping topic evidence and token subsets', async () => {
+    apiMocks.report.mockResolvedValue('# 报告');
+    apiMocks.reportData.mockResolvedValue({...data, sample: {...data.sample, validOpinions: 5}});
+    render(<ReportView run={run} onBack={vi.fn()} onError={vi.fn()}/>);
+    await screen.findByText('忍者设计负向原文');
+    const quality = screen.getByLabelText('数据质量与 Luna 用量');
+    expect(within(quality).getByText('进入报告').parentElement).toHaveTextContent('5 条');
+    expect(within(quality).getByText('全部强洞察').parentElement).toHaveTextContent('6 条');
+    expect(screen.getByText(/已分类观众记录 22 = 强洞察 6 \+ 弱信号 4 \+ 无参考价值 12/)).toBeInTheDocument();
+    expect(screen.getByText(/本主题证据 3 条 = 正向 1 \+ 混合 1 \+ 负向 1 \+ 中性 0/)).toBeInTheDocument();
+    expect(screen.getByText(/各主题证据数不能相加/)).toBeInTheDocument();
+    expect(screen.getByText('2,200 输入 + 500 输出')).toBeInTheDocument();
+    expect(screen.getByText(/缓存读取与缓存写入是输入 Token 的子集；推理是输出 Token 的子集/)).toBeInTheDocument();
+    expect(screen.getByText('其中推理 150，已包含在输出内')).toBeInTheDocument();
   });
 });

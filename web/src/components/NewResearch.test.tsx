@@ -8,7 +8,7 @@ const settings = {
   dataRoot: 'D:/Research/naruto-mobile',
   analysis: {
     aiConfigured: true,
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     reasoningEffort: 'medium',
     liveMode: 'ai' as const,
     demoMode: 'rule_demo' as const
@@ -43,6 +43,57 @@ const chromeProps = () => ({
 });
 
 describe('NewResearch', () => {
+  it('enables the game prefix by default and submits the previewed topic searches', () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByRole('checkbox', {name: '自动添加「火影手游」前缀'})).toBeChecked();
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: '十月活动\n新忍者评价，氪金意愿'}});
+    expect(screen.getByLabelText('实际搜索词')).toHaveTextContent('火影手游 十月活动');
+    expect(screen.getByLabelText('实际搜索词')).toHaveTextContent('火影手游 新忍者评价');
+    expect(screen.getByLabelText('实际搜索词')).toHaveTextContent('火影手游 氪金意愿');
+    fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({keywords: ['火影手游 十月活动', '火影手游 新忍者评价', '火影手游 氪金意愿']}));
+  });
+
+  it('can disable and re-enable the prefix without modifying the entered keywords', () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    const input = screen.getByLabelText(/关键词/);
+    const toggle = screen.getByRole('checkbox', {name: '自动添加「火影手游」前缀'});
+    fireEvent.change(input, {target: {value: ' 十月活动\n氪金意愿 '}});
+    fireEvent.click(toggle);
+    expect(input).toHaveValue(' 十月活动\n氪金意愿 ');
+    expect(screen.getByLabelText('实际搜索词')).not.toHaveTextContent('火影手游');
+    fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({keywords: ['十月活动', '氪金意愿']}));
+    fireEvent.click(toggle);
+    expect(input).toHaveValue(' 十月活动\n氪金意愿 ');
+    fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({keywords: ['火影手游 十月活动', '火影手游 氪金意愿']}));
+  });
+
+  it('avoids duplicate game names and deduplicates the actual searches', () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch {...chromeProps()} settings={{...settings, defaults: {...settings.defaults, keywords: ['火影忍者手游', '火影手游决斗场', '火影手游高招']}}} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByLabelText(/关键词/)).toHaveValue('火影忍者手游\n决斗场\n高招');
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: '十月活动\n火影手游 十月活动\n\n火影手游高招\n火影忍者手游 新忍者'}});
+    fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({keywords: ['火影手游 十月活动', '火影手游高招', '火影忍者手游 新忍者']}));
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: ' \n ， '}});
+    expect(screen.queryByLabelText('实际搜索词')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /开始调查/})).toBeDisabled();
+  });
+
+  it('checks the length limit after adding the prefix', () => {
+    render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: '活'.repeat(38)}});
+    expect(screen.getByRole('alert')).toHaveTextContent('单个实际搜索词不能超过 40 个字符。');
+    expect(screen.getByRole('button', {name: /开始调查/})).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', {name: '自动添加「火影手游」前缀'}));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /开始调查/})).toBeEnabled();
+  });
+
   it('starts with the beginner five-minute preset and submits canonical settings', async () => {
     const onStart = vi.fn().mockResolvedValue(undefined);
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
@@ -74,9 +125,45 @@ describe('NewResearch', () => {
   it('submits the selected live browser concurrency', async () => {
     const onStart = vi.fn().mockResolvedValue(undefined);
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
-    fireEvent.change(screen.getByLabelText('并行调查标签页数'), {target: {value: '3'}});
+    const concurrency = screen.getByLabelText('并行调查标签页数');
+    expect(concurrency).toHaveValue('4');
+    expect(Array.from((concurrency as HTMLSelectElement).options).map((option) => option.value)).toEqual(['4', '8']);
+    fireEvent.change(concurrency, {target: {value: '8'}});
     fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
-    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({browserWindowCount: 3}));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({browserWindowCount: 8}));
+  });
+
+  it('saves raw topics and the prefix choice, then restores them in a new form', async () => {
+    const onSaveKeywords = vi.fn().mockResolvedValue(undefined);
+    const props = {...chromeProps(), busy: false, selectingDataRoot: false, onStart: vi.fn().mockResolvedValue(undefined), onSelectDataRoot: vi.fn(), onOpenGuide: vi.fn(), onSaveKeywords};
+    const view = render(<NewResearch {...props} settings={settings}/>);
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: '十月活动\n火影手游 新忍者评价， 氪金意愿 '}});
+    fireEvent.click(screen.getByRole('checkbox', {name: '自动添加「火影手游」前缀'}));
+    fireEvent.click(screen.getByRole('button', {name: '保存关键词'}));
+    const saved = {keywords: ['十月活动', '火影手游 新忍者评价', '氪金意愿'], useKeywordPrefix: false};
+    await vi.waitFor(() => expect(onSaveKeywords).toHaveBeenCalledWith(saved));
+    expect(await screen.findByText('已保存，下次打开自动使用。')).toBeVisible();
+    view.unmount();
+    render(<NewResearch {...props} settings={{...settings, defaults: {...settings.defaults, ...saved}}}/>);
+    expect(screen.getByRole('checkbox', {name: '自动添加「火影手游」前缀'})).not.toBeChecked();
+    expect(screen.getByLabelText(/关键词/)).toHaveValue(saved.keywords.join('\n'));
+    fireEvent.click(screen.getByRole('button', {name: /开始调查/}));
+    expect(props.onStart).toHaveBeenCalledWith(expect.objectContaining({keywords: saved.keywords}));
+  });
+
+  it('keeps edited keywords available after a save error and permits retry', async () => {
+    const onSaveKeywords = vi.fn().mockRejectedValueOnce(new Error('磁盘暂时不可写。')).mockResolvedValueOnce(undefined);
+    render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()} onSaveKeywords={onSaveKeywords}/>);
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: '十月活动'}});
+    fireEvent.click(screen.getByRole('button', {name: '保存关键词'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('磁盘暂时不可写。');
+    expect(screen.getByLabelText(/关键词/)).toHaveValue('十月活动');
+    fireEvent.click(screen.getByRole('button', {name: '保存关键词'}));
+    expect(await screen.findByText('已保存，下次打开自动使用。')).toBeVisible();
+    expect(onSaveKeywords).toHaveBeenCalledTimes(2);
+    fireEvent.change(screen.getByLabelText(/关键词/), {target: {value: ' '}});
+    expect(screen.getByRole('button', {name: '保存关键词'})).toBeDisabled();
+    expect(screen.queryByText('已保存，下次打开自动使用。')).not.toBeInTheDocument();
   });
 
   it('lets the user control the source limit instead of applying a hidden cap', async () => {
@@ -147,6 +234,7 @@ describe('NewResearch', () => {
       onOpenGuide={vi.fn()}
     />);
     expect(screen.getByRole('button', {name: /登录 Archtree 后开始/})).toBeDisabled();
+    expect(screen.getByText('gpt-6-luna · 需要登录 Archtree')).toBeVisible();
     fireEvent.change(screen.getByLabelText('Archtree 邮箱或用户名'), {target: {value: 'friend@example.com'}});
     fireEvent.change(screen.getByLabelText('Archtree 密码'), {target: {value: 'private-password'}});
     fireEvent.click(screen.getByRole('button', {name: /^登录$/}));

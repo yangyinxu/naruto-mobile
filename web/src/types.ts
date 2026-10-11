@@ -17,6 +17,13 @@ export interface AiAnalysisActivity {
   screeningTotal: number;
   detailed: number;
   detailTotal: number;
+  cached?: number;
+  localExcluded?: number;
+  creatorExcluded?: number;
+  noiseExcluded?: number;
+  triageSkipped?: number;
+  effectiveConcurrency?: number;
+  configuredConcurrency?: number;
   inFlightRequests: number;
   inFlightOpinions: number;
   retryingRequests: number;
@@ -102,6 +109,11 @@ export interface RunManifest {
     creatorViewsExcluded?: number;
     fastTriageSkipped?: number;
     detailedAiOpinions?: number;
+    processedOpinions?: number;
+    duplicateOpinions?: number;
+    cleaningExcludedOpinions?: number;
+    missingContentOpinions?: number;
+    cachedAiOpinions?: number;
     usage?: AiTokenUsage;
   };
 }
@@ -245,6 +257,11 @@ export type RunRecordsResponse =
       records: ContentRecord[];
     });
 
+export interface KeywordSettings {
+  keywords: string[];
+  useKeywordPrefix: boolean;
+}
+
 export interface AppSettings {
   apiVersion?: number;
   dataRoot: string;
@@ -256,10 +273,12 @@ export interface AppSettings {
     transport?: 'proxy' | 'direct';
     model: string;
     reasoningEffort: string;
+    maxConcurrentRequests?: number;
+    batchSize?: number;
     liveMode: 'ai';
     demoMode: 'rule_demo';
   };
-  defaults: Omit<ResearchRequest, 'name'>;
+  defaults: Omit<ResearchRequest, 'name'> & {useKeywordPrefix?: boolean};
 }
 
 export interface ChromeConnectionStatus {

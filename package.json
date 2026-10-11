@@ -12,8 +12,9 @@
     "build:electron-main": "esbuild src/electron.ts --bundle --platform=node --format=cjs --target=node22 --packages=external --outfile=build/electron/main.cjs",
     "build:server": "tsc --noEmit",
     "build:web": "npm run build --workspace @naruto-mobile/web",
-    "package:win": "npm run build && npm run build:electron-main && electron-builder --win portable --x64",
+    "package:win": "npm run build && npm run build:electron-main && electron-builder --win portable --x64 && npm run smoke:win && node scripts/publish-windows.mjs",
     "package:win:dir": "npm run build && npm run build:electron-main && electron-builder --win dir --x64",
+    "smoke:win": "node scripts/smoke-windows.mjs",
     "dev": "tsx watch src/server.ts",
     "dev:web": "npm run dev --workspace @naruto-mobile/web",
     "start": "tsx src/server.ts",
@@ -43,11 +44,11 @@
   "build": {
     "appId": "com.yangy.naruto.feedback",
     "productName": "火影手游玩家反馈调查工具",
-    "artifactName": "NarutoFeedbackResearch-${version}-portable.${ext}",
+    "artifactName": "火影调查.${ext}",
     "compression": "normal",
     "npmRebuild": false,
     "directories": {
-      "output": "release"
+      "output": "build/windows"
     },
     "files": [
       "build/electron/main.cjs",

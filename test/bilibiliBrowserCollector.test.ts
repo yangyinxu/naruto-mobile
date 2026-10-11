@@ -4,6 +4,7 @@ import {Page} from 'playwright';
 import {AppConfig} from '../src/config';
 import {BilibiliBrowserCollector} from '../src/collectors/bilibiliBrowserCollector';
 import {CollectionContext} from '../src/domain/types';
+import {normalizeResearchRequest} from '../src/domain/validation';
 import {ChromeConnectionService} from '../src/services/chromeConnection';
 
 const config: AppConfig = {
@@ -99,4 +100,101 @@ test('initializes and closes the worker page pool without a temporal dead zone e
   assert.match(initScript, /volumechange/);
   assert.equal(closed, true);
   assert.equal(released, true);
+});
+
+test('collects with eight concurrent workers and cleans up every page after candidate failures', async () => {
+  const pages: Array<{initScript: string; timeout: number; closes: number}> = [];
+  const visited = new Set<string>();
+  let inFlight = 0;
+  let maximumInFlight = 0;
+  let releaseCount = 0;
+  let warningCount = 0;
+  let releaseWorkers!: () => void;
+  const workerGate = new Promise<void>(resolve => {releaseWorkers = resolve;});
+  let allWorkersStarted!: () => void;
+  const workersStarted = new Promise<void>(resolve => {allWorkersStarted = resolve;});
+  const chromeConnection = {
+    acquire: async () => ({
+      context: {
+        newPage: async () => {
+          const lifecycle = {initScript: '', timeout: 0, closes: 0};
+          pages.push(lifecycle);
+          return {
+            addInitScript: async (script: {content?: string}) => {lifecycle.initScript = script.content ?? '';},
+            setDefaultTimeout: (timeout: number) => {lifecycle.timeout = timeout;},
+            goto: async (url: string) => {
+              assert.equal(visited.has(url), false, 'Each candidate must be claimed by only one worker');
+              visited.add(url);
+              inFlight += 1;
+              maximumInFlight = Math.max(maximumInFlight, inFlight);
+              if (inFlight === 8) allWorkersStarted();
+              try {
+                await workerGate;
+                throw new Error('Stubbed content page failure');
+              } finally {
+                inFlight -= 1;
+              }
+            },
+            close: async () => {lifecycle.closes += 1;}
+          } as unknown as Page;
+        }
+      },
+      release: () => {releaseCount += 1;}
+    })
+  } as unknown as ChromeConnectionService;
+  const now = new Date().toISOString();
+  const context: CollectionContext = {
+    manifest: {
+      schemaVersion: 1, id: 'run-eight-workers', state: 'collecting',
+      request: normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: 8}),
+      createdAt: now, updatedAt: now, activeElapsedMs: 0, statusMessage: 'collecting',
+      counts: {candidates: 8, contents: 0, opinions: 0, validOpinions: 0, sources: 0, warnings: 0},
+      reportReady: false
+    },
+    checkpoint: {
+      schemaVersion: 1,
+      pendingCandidates: Array.from({length: 8}, (_, index) => ({
+        id: `BVtest${index}`, type: 'video', url: `https://www.bilibili.com/video/BVtest${index}`,
+        title: 'test', discoveryKeyword: '火影手游', discoveryRank: index + 1
+      })),
+      seenContentIds: [], seenOpinionIds: [], activeElapsedMs: 0, updatedAt: now
+    },
+    callbacks: {
+      getDirective: () => 'continue', remainingMs: () => 180_000,
+      onState: async () => undefined, onCandidates: async () => undefined,
+      onContent: async () => {assert.fail('Failed candidate pages must not save content');},
+      onOpinion: async () => {assert.fail('Failed candidate pages must not save opinions');},
+      onCheckpoint: async () => undefined,
+      onWarning: async () => {warningCount += 1;}
+    }
+  };
+  const collecting = new BilibiliBrowserCollector(config, chromeConnection).collect(context);
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      workersStarted,
+      new Promise<never>((_, reject) => {
+        startupTimer = setTimeout(() => reject(new Error('Eight workers did not start concurrently')), 2_000);
+      })
+    ]);
+    assert.equal(maximumInFlight, 8);
+    releaseWorkers();
+    const result = await collecting;
+    assert.equal(result.outcome, 'source_exhausted');
+    assert.equal(visited.size, 8);
+    assert.equal(warningCount, 8);
+    assert.equal(result.checkpoint.pendingCandidates.length, 0);
+    assert.equal(new Set(result.checkpoint.seenContentIds).size, 8);
+    assert.equal(pages.length, 8);
+    for (const page of pages) {
+      assert.match(page.initScript, /HTMLVideoElement/);
+      assert.equal(page.timeout, 6_000);
+      assert.equal(page.closes, 1);
+    }
+    assert.equal(releaseCount, 1);
+  } finally {
+    clearTimeout(startupTimer);
+    releaseWorkers();
+    await collecting;
+  }
 });

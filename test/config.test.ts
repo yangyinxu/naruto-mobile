@@ -35,3 +35,25 @@ test('creates and reuses a private local UID salt when none is configured', asyn
     await rm(directory, {recursive: true, force: true});
   }
 });
+
+test('defaults AI requests to twelve while retaining bounded explicit concurrency', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-ai-capacity-'));
+  const previous = {root: process.env.RESEARCH_DATA_DIR, concurrency: process.env.OPENAI_CONCURRENCY};
+  try {
+    process.env.RESEARCH_DATA_DIR = directory;
+    delete process.env.OPENAI_CONCURRENCY;
+    assert.equal(loadAppConfig().aiConcurrency, 12);
+    process.env.OPENAI_CONCURRENCY = '4';
+    assert.equal(loadAppConfig().aiConcurrency, 4);
+    process.env.OPENAI_CONCURRENCY = '999';
+    assert.equal(loadAppConfig().aiConcurrency, 12);
+    process.env.OPENAI_CONCURRENCY = '0';
+    assert.equal(loadAppConfig().aiConcurrency, 12);
+  } finally {
+    if (previous.root === undefined) delete process.env.RESEARCH_DATA_DIR;
+    else process.env.RESEARCH_DATA_DIR = previous.root;
+    if (previous.concurrency === undefined) delete process.env.OPENAI_CONCURRENCY;
+    else process.env.OPENAI_CONCURRENCY = previous.concurrency;
+    await rm(directory, {recursive: true, force: true});
+  }
+});
