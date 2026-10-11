@@ -269,6 +269,8 @@ const assertAnalysisCountUi = async (browserInstance, baseUrl) => {
     assertMeaning(liveCounts, '与 Chrome 采集标签页数分别设置');
     assertMeaning(liveCounts, '正在请求 120 条 · 12 批');
     assertMeaning(liveCounts, '条是记录数，批是 API 请求数');
+    assertMeaning(await live.locator('.analysis-live-heading').innerText(), '本次分析已用时');
+    assertMeaning(await live.locator('.analysis-live-wait').innerText(), '最早启动的在途请求已等待');
     const breakdown = await page.getByLabel('分析数量口径').innerText();
     assertMeaning(breakdown, '全部记录 1406 = 复用缓存 0 + 本地排除 72 + Decisions 跳过 42 + 需要详析 1292');
     assertMeaning(breakdown, '已完成 1114 = 复用缓存 0 + 本地排除 72 + Decisions 跳过 42 + 详析完成 1000');
