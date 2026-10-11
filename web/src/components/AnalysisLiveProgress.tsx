@@ -44,7 +44,7 @@ export const AnalysisLiveProgress = ({activity, working, connection, updatedAt, 
 
   return (
     <section className="analysis-live" aria-label="实时分析进度">
-      <div className="analysis-live-heading"><strong>{stageLabel}</strong><span>分析已用时 <b>{elapsedTime(secondsSince(activity.startedAt, observedTime))}</b></span></div>
+      <div className="analysis-live-heading"><strong>{stageLabel}</strong><span>本次分析已用时 <b>{elapsedTime(secondsSince(activity.startedAt, observedTime))}</b></span></div>
       <div className="analysis-live-counts">
         {displayTotal !== undefined && displayCompleted !== undefined && <span>分析总处理 <b>{displayCompleted}/{displayTotal}</b><small>已得到最终分类 / 进入分析的记录数</small></span>}
         <span>Decisions 已初筛 <b>{activity.screened}/{activity.screeningTotal}</b><small>已返回初筛结果 / 本次送入初筛</small></span>
@@ -66,7 +66,7 @@ export const AnalysisLiveProgress = ({activity, working, connection, updatedAt, 
           ? <span role="status">进度连接已断开，正在重连；当前显示最后保存的进度。</span>
           : !working ? <span>分析已暂停，进度已保存。</span>
             : <>
-              {activity.oldestRequestStartedAt && <span>本轮响应已等待 <b>{secondsSince(activity.oldestRequestStartedAt, observedTime)} 秒</b></span>}
+              {activity.oldestRequestStartedAt && <span>最早启动的在途请求已等待 <b>{secondsSince(activity.oldestRequestStartedAt, observedTime)} 秒</b></span>}
               {activity.retryingRequests > 0 && <span role="status">{activity.retryingRequests} 批 API 请求等待重试 · {retrySeconds > 0 ? `${retrySeconds} 秒后重试` : '正在重新发起请求'}</span>}
               {activity.lastResultAt && <span>上次收到结果距今 {secondsSince(activity.lastResultAt, observedTime)} 秒</span>}
               {!activity.inFlightRequests && !activity.retryingRequests && <span>正在整理已返回的结果…</span>}
