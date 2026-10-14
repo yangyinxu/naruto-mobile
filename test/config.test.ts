@@ -6,12 +6,15 @@ import test from 'node:test';
 import {loadAppConfig, resolveEnvFileCandidates} from '../src/config';
 
 test('portable build checks beside the launcher and its parent for .env', () => {
-  assert.deepEqual(resolveEnvFileCandidates('C:\\unrelated', {
-    PORTABLE_EXECUTABLE_DIR: 'D:\\apps\\naruto\\release'
+  const unrelated = join(tmpdir(), 'naruto-portable-config-fixture', 'unrelated');
+  const portableParent = join(tmpdir(), 'naruto-portable-config-fixture', 'apps', 'naruto');
+  const portableDirectory = join(portableParent, 'release');
+  assert.deepEqual(resolveEnvFileCandidates(unrelated, {
+    PORTABLE_EXECUTABLE_DIR: portableDirectory
   }), [
-    'C:\\unrelated\\.env',
-    'D:\\apps\\naruto\\release\\.env',
-    'D:\\apps\\naruto\\.env'
+    join(unrelated, '.env'),
+    join(portableDirectory, '.env'),
+    join(portableParent, '.env')
   ]);
 });
 

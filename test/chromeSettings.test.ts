@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {apps} from 'open';
 import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../src/services/chromeSettings';
 
 test('opens the protected Chrome connection page in Google Chrome', async () => {
@@ -10,7 +11,7 @@ test('opens the protected Chrome connection page in Google Chrome', async () => 
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].target, CHROME_REMOTE_DEBUGGING_URL);
-  assert.equal(calls[0].options.app.name, 'chrome');
+  assert.deepEqual(calls[0].options.app.name, apps.chrome);
   assert.deepEqual(calls[0].options.app.arguments, ['--new-window']);
   assert.equal(calls[0].options.wait, false);
 });

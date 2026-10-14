@@ -117,6 +117,11 @@ npm test
 npm run build
 ```
 
+The hosted release runs these checks on Linux as well as local Windows development.
+Portable configuration fixtures use native host paths and Chrome-launch tests use
+the operating system's Chrome application mapping. Profile resolution explicitly
+checks Windows, macOS, and Linux layouts independently of the test host.
+
 ## 打包为单个 Windows EXE
 
 开发电脑运行以下命令即可生成免安装便携版：

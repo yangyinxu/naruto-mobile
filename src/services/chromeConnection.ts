@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {Socket} from 'node:net';
 import {homedir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {join, posix, win32} from 'node:path';
 import {Browser, BrowserContext, chromium, Page} from 'playwright';
 import {AppConfig} from '../config';
 
@@ -39,39 +39,40 @@ export class ChromeConnectionError extends Error {
 
 const chromeDirectoryNames: Record<string, {windows: string; mac: string; linux: string}> = {
   chrome: {
-    windows: join('Google', 'Chrome', 'User Data'),
-    mac: join('Google', 'Chrome'),
+    windows: win32.join('Google', 'Chrome', 'User Data'),
+    mac: posix.join('Google', 'Chrome'),
     linux: 'google-chrome'
   },
   'chrome-beta': {
-    windows: join('Google', 'Chrome Beta', 'User Data'),
-    mac: join('Google', 'Chrome Beta'),
+    windows: win32.join('Google', 'Chrome Beta', 'User Data'),
+    mac: posix.join('Google', 'Chrome Beta'),
     linux: 'google-chrome-beta'
   },
   'chrome-canary': {
-    windows: join('Google', 'Chrome SxS', 'User Data'),
-    mac: join('Google', 'Chrome Canary'),
+    windows: win32.join('Google', 'Chrome SxS', 'User Data'),
+    mac: posix.join('Google', 'Chrome Canary'),
     linux: 'google-chrome-canary'
   }
 };
 
-/** Resolves Chrome's local profile root without exposing it in the web API. */
+/** Resolves the selected platform's profile root independently of the host; it stays private to desktop discovery. */
 export const chromeUserDataDirectory = (
   channel: string,
   platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
   userHome = homedir()
 ) => {
+  const profilePath = platform === 'win32' ? win32 : posix;
   const configured = environment.CHROME_USER_DATA_DIR?.trim();
-  if (configured) return resolve(configured);
+  if (configured) return profilePath.resolve(configured);
   const names = chromeDirectoryNames[channel] ?? chromeDirectoryNames.chrome;
   if (platform === 'win32') {
     const localAppData = environment.LOCALAPPDATA?.trim();
-    return localAppData ? join(localAppData, names.windows) : undefined;
+    return localAppData ? profilePath.join(localAppData, names.windows) : undefined;
   }
-  if (platform === 'darwin') return join(userHome, 'Library', 'Application Support', names.mac);
-  const configRoot = environment.XDG_CONFIG_HOME?.trim() || join(userHome, '.config');
-  return join(configRoot, names.linux);
+  if (platform === 'darwin') return profilePath.join(userHome, 'Library', 'Application Support', names.mac);
+  const configRoot = environment.XDG_CONFIG_HOME?.trim() || profilePath.join(userHome, '.config');
+  return profilePath.join(configRoot, names.linux);
 };
 
 const validatedEndpoint = (contents: string): ChromeEndpoint => {

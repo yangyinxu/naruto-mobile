@@ -14,6 +14,57 @@ test('resolves the standard Windows Chrome profile without requiring user input'
   );
 });
 
+const profileDirectoryCases: {
+  name: string; channel: string; platform: NodeJS.Platform; environment: NodeJS.ProcessEnv;
+  userHome: string; expected: string | undefined;
+}[] = [
+  {name: 'Windows Beta normalizes its supplied root with Windows separators', channel: 'chrome-beta', platform: 'win32',
+    environment: {LOCALAPPDATA: ' C:/Users/tester/AppData/Local '}, userHome: 'C:\\Users\\tester',
+    expected: 'C:\\Users\\tester\\AppData\\Local\\Google\\Chrome Beta\\User Data'},
+  {name: 'Windows Canary uses its own profile directory', channel: 'chrome-canary', platform: 'win32',
+    environment: {LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local'}, userHome: 'C:\\Users\\tester',
+    expected: 'C:\\Users\\tester\\AppData\\Local\\Google\\Chrome SxS\\User Data'},
+  {name: 'Windows requires Local AppData instead of guessing from home', channel: 'chrome', platform: 'win32',
+    environment: {LOCALAPPDATA: ' '}, userHome: 'C:\\Users\\tester', expected: undefined},
+  {name: 'an unknown Windows channel falls back to stable Chrome', channel: 'custom', platform: 'win32',
+    environment: {LOCALAPPDATA: 'C:\\Local'}, userHome: 'C:\\Users\\tester',
+    expected: 'C:\\Local\\Google\\Chrome\\User Data'},
+  {name: 'macOS stable uses its home Library independent of XDG settings', channel: 'chrome', platform: 'darwin',
+    environment: {XDG_CONFIG_HOME: '/ignored', LOCALAPPDATA: 'C:\\ignored'}, userHome: '/Users/tester',
+    expected: '/Users/tester/Library/Application Support/Google/Chrome'},
+  {name: 'macOS Beta uses its own profile directory', channel: 'chrome-beta', platform: 'darwin',
+    environment: {}, userHome: '/Users/tester', expected: '/Users/tester/Library/Application Support/Google/Chrome Beta'},
+  {name: 'macOS Canary uses its own profile directory', channel: 'chrome-canary', platform: 'darwin',
+    environment: {}, userHome: '/Users/tester', expected: '/Users/tester/Library/Application Support/Google/Chrome Canary'},
+  {name: 'an unknown macOS channel falls back to stable Chrome', channel: 'custom', platform: 'darwin',
+    environment: {}, userHome: '/Users/tester', expected: '/Users/tester/Library/Application Support/Google/Chrome'},
+  {name: 'Linux stable honors the trimmed XDG config root', channel: 'chrome', platform: 'linux',
+    environment: {XDG_CONFIG_HOME: ' /profiles/config '}, userHome: '/home/tester', expected: '/profiles/config/google-chrome'},
+  {name: 'Linux Beta defaults to the home config directory', channel: 'chrome-beta', platform: 'linux',
+    environment: {}, userHome: '/home/tester', expected: '/home/tester/.config/google-chrome-beta'},
+  {name: 'Linux Canary falls back when the XDG setting is blank', channel: 'chrome-canary', platform: 'linux',
+    environment: {XDG_CONFIG_HOME: ' '}, userHome: '/home/tester', expected: '/home/tester/.config/google-chrome-canary'},
+  {name: 'an unknown Linux channel falls back to stable Chrome', channel: 'custom', platform: 'linux',
+    environment: {}, userHome: '/home/tester', expected: '/home/tester/.config/google-chrome'},
+  {name: 'an explicit Windows profile overrides discovery and resolves Windows dot segments', channel: 'chrome', platform: 'win32',
+    environment: {CHROME_USER_DATA_DIR: ' C:\\Profiles\\old\\..\\Research '}, userHome: 'C:\\Users\\tester',
+    expected: 'C:\\Profiles\\Research'},
+  {name: 'an explicit Windows UNC profile keeps its server and share', channel: 'chrome', platform: 'win32',
+    environment: {CHROME_USER_DATA_DIR: '\\\\server\\profiles\\old\\..\\Research'}, userHome: 'C:\\Users\\tester',
+    expected: '\\\\server\\profiles\\Research'},
+  {name: 'an explicit macOS profile overrides its default Library path', channel: 'chrome', platform: 'darwin',
+    environment: {CHROME_USER_DATA_DIR: ' /profiles/old/../Research '}, userHome: '/Users/tester', expected: '/profiles/Research'},
+  {name: 'an explicit Linux profile overrides XDG and resolves POSIX dot segments', channel: 'chrome', platform: 'linux',
+    environment: {CHROME_USER_DATA_DIR: '/profiles/old/../Research', XDG_CONFIG_HOME: '/ignored'},
+    userHome: '/home/tester', expected: '/profiles/Research'}
+];
+
+for (const value of profileDirectoryCases) {
+  test(value.name, () => {
+    assert.equal(chromeUserDataDirectory(value.channel, value.platform, value.environment, value.userHome), value.expected);
+  });
+}
+
 test('discovers and validates a dynamic loopback websocket endpoint', async () => {
   const endpoint = await discoverChromeEndpoint(
     {browserChannel: 'chrome'},
