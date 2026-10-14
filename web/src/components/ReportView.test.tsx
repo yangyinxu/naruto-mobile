@@ -1,7 +1,10 @@
-import {fireEvent, render, screen, within} from '@testing-library/react';
+import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import {describe, expect, it, vi} from 'vitest';
 import {ReportData, ReportTopic, RunManifest} from '../types';
 import {ReportView} from './ReportView';
+import {downloadReportFile} from '../lib/downloadReport';
+
+vi.mock('../lib/downloadReport', () => ({downloadReportFile: vi.fn()}));
 
 const topic = (name: string, suffix: string): ReportTopic => ({
   topic: name,
@@ -81,6 +84,24 @@ const run: RunManifest = {
 };
 
 describe('ReportView', () => {
+  it('exports the full HTML dossier regardless of the currently selected topic and sentiment', async () => {
+    apiMocks.report.mockResolvedValue('# 完整报告');
+    apiMocks.reportData.mockResolvedValue(data);
+    render(<ReportView run={run} onBack={vi.fn()} onError={vi.fn()}/>);
+    await screen.findByText('忍者设计负向原文');
+    fireEvent.click(screen.getByRole('button', {name: /忍者强度.*查看完整详情/}));
+    fireEvent.click(screen.getByRole('tab', {name: /混合/}));
+    fireEvent.click(screen.getByRole('button', {name: '导出 HTML'}));
+    await waitFor(() => expect(downloadReportFile).toHaveBeenCalledWith(
+      expect.stringContaining('<!doctype html>'), run.request.name, 'html'
+    ));
+    const html = vi.mocked(downloadReportFile).mock.calls.find((call) => call[2] === 'html')![0];
+    for (const name of ['忍者设计', '忍者强度']) {
+      for (const sentiment of ['正向', '混合', '负向']) expect(html).toContain(`${name}${sentiment}原文`);
+    }
+    fireEvent.click(screen.getByRole('button', {name: '导出 Markdown'}));
+    expect(downloadReportFile).toHaveBeenCalledWith('# 完整报告', run.request.name, 'md');
+  });
   it('shows Decisions and Luna costs separately while preserving historical usage displays', async () => {
     apiMocks.report.mockResolvedValue('# 报告');
     apiMocks.reportData.mockResolvedValue({...data, quality: {...data.quality, usage: {

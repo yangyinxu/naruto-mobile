@@ -8,6 +8,7 @@ import {
   RunManifest,
   RunRecordsResponse
 } from '../types';
+import {browserApi} from '../browser/api';
 
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
@@ -35,7 +36,7 @@ const archiveFilename = (header: string | null): string => {
   return name.toLowerCase().endsWith('.zip') ? name : `${name || '调查记录'}.zip`;
 };
 
-export const api = {
+const desktopApi = {
   settings: () => request<AppSettings>('/api/settings'),
   saveKeywords: (settings: KeywordSettings) => request<KeywordSettings>('/api/settings/keywords', {
     method: 'PUT', body: JSON.stringify(settings)
@@ -134,3 +135,6 @@ export const api = {
     await request<{report: ReportData}>(`/api/runs/${id}/report-data`)
   ).report
 };
+
+/** Hosted builds run on this device; desktop builds continue using the local service. */
+export const api: typeof desktopApi = import.meta.env.MODE === 'hosted' ? browserApi : desktopApi;

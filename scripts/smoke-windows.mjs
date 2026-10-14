@@ -6,7 +6,7 @@ import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {basename, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
 import {chromium} from 'playwright';
 
@@ -158,6 +158,73 @@ const readJsonLines = async path => (await readFile(path, 'utf8')).split(/\r?\n/
 const withoutRunId = value => value === undefined ? undefined
   : JSON.parse(JSON.stringify(value, (key, item) => key === 'runId' ? undefined : item));
 
+/** Open the actual production download over file:// with the network disabled. */
+const assertHtmlReportExportUi = async (page, expected) => {
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('button', {name: '导出 HTML', exact: true}).click();
+  const download = await downloadEvent;
+  assert.ok(download.suggestedFilename().endsWith('.html'));
+  const htmlPath = join(evidenceDirectory, 'demonstration-report.html');
+  await download.saveAs(htmlPath);
+  assert.equal(await download.failure(), null);
+  const html = await readFile(htmlPath, 'utf8');
+  assert.ok(html.startsWith('<!doctype html>'));
+  const evidenceCount = expected.topics.reduce((total, topic) => total
+    + Object.values(topic.evidence).reduce((count, items) => count + items.length, 0), 0);
+  assert.ok(evidenceCount > 0, 'Offline fixture must exercise real evidence');
+  const context = await browser.newContext({offline: true, viewport: {width: 1440, height: 1000}});
+  const noScriptContext = await browser.newContext({offline: true, javaScriptEnabled: false});
+  try {
+    const offlinePage = await context.newPage();
+    const errors = [];
+    const networkRequests = [];
+    offlinePage.on('pageerror', error => errors.push(error.message));
+    offlinePage.on('request', request => {
+      if (/^https?:/i.test(request.url())) networkRequests.push(request.url());
+    });
+    await offlinePage.goto(pathToFileURL(htmlPath).href);
+    await offlinePage.locator('html.html-report-interactive').waitFor();
+    assert.equal(await offlinePage.locator('[data-report-topic]').count(), expected.topics.length);
+    assert.equal(await offlinePage.locator('.evidence-item').count(), evidenceCount);
+    assert.equal(await offlinePage.locator('script[src], link, img, iframe').count(), 0);
+    for (const [index, topic] of expected.topics.entries()) {
+      await offlinePage.locator(`[data-report-topic-link="${index}"]`).click();
+      const detail = offlinePage.locator(`[data-report-topic="${index}"]`);
+      assert.equal(await detail.isVisible(), true);
+      for (const [sentiment, items] of Object.entries(topic.evidence)) {
+        if (sentiment === 'neutral' && !topic.neutral) continue;
+        await detail.locator(`[data-report-sentiment="${sentiment}"]`).click();
+        const panel = detail.locator(`[data-evidence-panel="${sentiment}"]`);
+        assert.equal(await panel.isVisible(), true);
+        assert.deepEqual(await panel.locator('blockquote').allTextContents(), items.map(item => item.text));
+      }
+    }
+    assert.equal(await offlinePage.locator('.report-quality details ul').isVisible(), true);
+    await offlinePage.screenshot({path: join(evidenceDirectory, 'html-report-desktop.png'), fullPage: true});
+    await offlinePage.setViewportSize({width: 390, height: 844});
+    assert.equal(await offlinePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'Offline report overflows a narrow viewport');
+    await offlinePage.screenshot({path: join(evidenceDirectory, 'html-report-mobile.png'), fullPage: true});
+    await offlinePage.emulateMedia({media: 'print'});
+    for (const detail of await offlinePage.locator('[data-report-topic], [data-evidence-panel]').all()) {
+      assert.equal(await detail.isVisible(), true, 'Printing omits a filtered topic or sentiment');
+    }
+    await offlinePage.pdf({path: join(evidenceDirectory, 'demonstration-report.pdf'), format: 'A4', printBackground: true});
+    const noScriptPage = await noScriptContext.newPage();
+    await noScriptPage.goto(pathToFileURL(htmlPath).href);
+    for (const item of await noScriptPage.locator('.evidence-item').all()) assert.equal(await item.isVisible(), true);
+    assert.equal(await noScriptPage.locator('.report-quality details ul').isVisible(), true);
+    assert.deepEqual(errors, [], 'Offline export has JavaScript errors');
+    assert.deepEqual(networkRequests, [], 'Offline report loads external assets or contacts a server');
+    return {filename: download.suggestedFilename(), bytes: Buffer.byteLength(html), topics: expected.topics.length,
+      evidenceCount, offline: true, noExternalRequests: true, allSentimentsSwitchable: true,
+      allEvidencePrintable: true, readableWithoutJavaScript: true, narrowLayoutFits: true};
+  } finally {
+    await context.close();
+    await noScriptContext.close();
+  }
+};
+
 /** Round-trip a completed local fixture through the actual packaged archive API and UI. */
 const assertArchiveTransferUi = async (page, baseUrl, dataRoot, run) => {
   const originalDirectory = join(dataRoot, 'runs', run.id);
@@ -217,6 +284,7 @@ const assertArchiveTransferUi = async (page, baseUrl, dataRoot, run) => {
     assert.deepEqual(withoutRunId(importedReport[field]), withoutRunId(originalReport[field]), `Imported report changed ${field}`);
   }
   assert.equal((await fetch(`${baseUrl}/api/runs/${firstImport.id}/report`)).status, 200);
+  const htmlReportExport = await assertHtmlReportExportUi(page, importedReport);
   const importedDirectory = join(dataRoot, 'runs', firstImport.id);
   const importedOpinions = await readJsonLines(join(importedDirectory, 'raw', 'opinions.jsonl'));
   const importedContents = await readJsonLines(join(importedDirectory, 'raw', 'contents.jsonl'));
@@ -292,7 +360,7 @@ const assertArchiveTransferUi = async (page, baseUrl, dataRoot, run) => {
     opinionRecords: originalOpinions.length, contentRecords: originalContents.length,
     reportAndRawRecordsPreserved: true, originalFilesUnchanged: true, earlierImportFilesUnchanged: true,
     repeatedImportCreatesSeparateCopy: true, malformedZipRejectedWithChineseError: true,
-    noLoginRequired: true, historyCount: 3, layoutChecks, screenshotFiles
+    noLoginRequired: true, historyCount: 3, layoutChecks, screenshotFiles, htmlReportExport
   };
 };
 

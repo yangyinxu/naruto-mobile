@@ -1,0 +1,89 @@
+import type {BrowserRun, RunStorage} from './types';
+
+export const LOCAL_DATA_DESCRIPTION = '当前 Chrome 浏览器本机存储（IndexedDB）；请定期导出 ZIP 备份';
+
+/** Waits for transaction commit so a quota or disk failure never reports a saved checkpoint. */
+export class BrowserRunStore implements RunStorage {
+  private database?: Promise<IDBDatabase>;
+
+  constructor(private readonly name = 'naruto-browser-local-v1', private readonly factory = globalThis.indexedDB) {}
+
+  private open() {
+    if (!this.factory) return Promise.reject(new Error('此浏览器无法使用本机存储，请使用普通 Chrome 窗口。'));
+    this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = this.factory.open(this.name, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('runs', {keyPath: 'id'});
+        request.result.createObjectStore('settings');
+      };
+      request.onerror = () => reject(new Error('无法打开本机调查数据，请检查浏览器存储设置。'));
+      request.onblocked = () => reject(new Error('本机数据库升级被另一个页面阻止，请关闭旧页面后重试。'));
+      request.onsuccess = () => {
+        const database = request.result;
+        database.onversionchange = () => {database.close(); this.database = undefined;};
+        resolve(database);
+      };
+    }).catch((error) => {this.database = undefined; throw error;});
+    return this.database;
+  }
+
+  private async transaction<T>(storeName: 'runs' | 'settings', mode: IDBTransactionMode,
+    operation: (store: IDBObjectStore, setValue: (value: T) => void, setFailure: (error: unknown) => void) => void): Promise<T> {
+    const database = await this.open();
+    return new Promise<T>((resolve, reject) => {
+      const transaction = database.transaction(storeName, mode);
+      let value: T;
+      let failure: unknown;
+      transaction.oncomplete = () => resolve(value);
+      transaction.onabort = () => reject(failure ?? new Error(transaction.error?.name === 'QuotaExceededError'
+        ? '浏览器本机存储空间不足，本次步骤未保存。请导出备份、释放空间后重试。'
+        : '本机数据写入失败，本次步骤未保存。已有数据仍保留，可重试。'));
+      transaction.onerror = () => { /* The abort handler reports the durable outcome. */ };
+      try {operation(transaction.objectStore(storeName), (next) => {value = next;}, (error) => {failure = error;});}
+      catch (error) {transaction.abort(); reject(error);}
+    });
+  }
+
+  list() {
+    return this.transaction<BrowserRun[]>('runs', 'readonly', (store, set) => {
+      store.getAll().onsuccess = (event) => set((event.target as IDBRequest<BrowserRun[]>).result);
+    });
+  }
+
+  async get(id: string) {
+    const run = await this.transaction<BrowserRun | undefined>('runs', 'readonly', (store, set) => {
+      store.get(id).onsuccess = (event) => set((event.target as IDBRequest<BrowserRun | undefined>).result);
+    });
+    if (!run) throw new Error('本机没有这份调查。');
+    return run;
+  }
+
+  create(run: BrowserRun) {
+    return this.transaction<void>('runs', 'readwrite', (store) => {store.add(run);});
+  }
+
+  update(id: string, transform: (run: BrowserRun) => BrowserRun) {
+    return this.transaction<BrowserRun>('runs', 'readwrite', (store, set, setFailure) => {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        try {
+          if (!request.result) throw new Error('本机没有这份调查。');
+          const next = transform(request.result as BrowserRun);
+          if (next.id !== id || next.manifest.id !== id) throw new Error('调查身份不能更改。');
+          store.put(next);
+          set(next);
+        } catch (error) {setFailure(error); request.transaction?.abort();}
+      };
+    });
+  }
+
+  getSetting<T>(key: string) {
+    return this.transaction<T | undefined>('settings', 'readonly', (store, set) => {
+      store.get(key).onsuccess = (event) => set((event.target as IDBRequest<T | undefined>).result);
+    });
+  }
+
+  setSetting(key: string, value: unknown) {
+    return this.transaction<void>('settings', 'readwrite', (store) => {store.put(value, key);});
+  }
+}

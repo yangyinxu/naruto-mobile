@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import {RunManifest} from '../types';
+import {subscribeRun} from '../browser/api';
 
 export type RunStreamConnection = 'connecting' | 'connected' | 'reconnecting';
 
@@ -11,6 +12,10 @@ export const useRunStream = (runId: string | null, initial?: RunManifest) => {
   useEffect(() => {
     if (!runId) return;
     setConnection('connecting');
+    if (import.meta.env.MODE === 'hosted') {
+      setConnection('connected');
+      return subscribeRun(runId, setRun);
+    }
     const stream = new EventSource(`/api/runs/${runId}/events`);
     stream.onopen = () => setConnection('connected');
     stream.onerror = () => setConnection('reconnecting');

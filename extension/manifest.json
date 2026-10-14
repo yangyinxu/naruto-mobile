@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Naruto Mobile local collector",
+  "version": "0.1.7",
+  "description": "Collect public Bilibili feedback in your own browser for the Naruto research portal.",
+  "minimum_chrome_version": "120",
+  "permissions": ["tabs", "tabGroups", "scripting", "storage"],
+  "host_permissions": [
+    "https://www.bilibili.com/*",
+    "https://search.bilibili.com/*",
+    "https://t.bilibili.com/*",
+    "https://api.bilibili.com/*"
+  ],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "content_scripts": [{
+    "matches": [
+      "https://kashewt.com/naruto*",
+      "http://127.0.0.1/naruto*",
+      "http://localhost/naruto*"
+    ],
+    "js": ["portal.js"],
+    "run_at": "document_start",
+    "all_frames": false
+  }],
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}

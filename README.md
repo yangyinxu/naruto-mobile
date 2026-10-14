@@ -53,6 +53,7 @@ Chrome 连接只监听当前电脑的 `127.0.0.1`。不同电脑会在运行时�
 - 每条新记录带调查 ID；评论同时保存公开用户名、UID、平台评论 ID、父评论 ID、来源页/直达链接和采集时间
 - 原子检查点与运行锁，支持安全暂停和跨进程恢复
 - Luna 分析中断或应用关闭后可点击“继续分析并生成报告”，复用已保存的分析缓存，不需要重新连接 Chrome 或增加采集时间
+- Transient Node and Chrome fetch failures, including interrupted response bodies, retry up to six attempts per batch with exponential backoff. Persistent detail failures preserve completed cache records for explicit resume; cancellation, account changes, and unrelated programming errors do not trigger transport retries.
 - 提前终止后直接清洗，并通过 Luna 结构化筛选后生成报告
 - 全量原始数据保存在本地；本地只剔除可确定的纯表情、纯数字等硬噪声
 - Decisions API（gpt-6-luna）按意见 ID 分别提问，做“详细分析 / 不确定 / 明确跳过”高召回初筛；仅跳过置信度与类别概率均达到 0.95 的非产品反馈，低置信度、拒答、格式异常或请求失败均进入 gpt-6-luna medium 详细分析
@@ -62,9 +63,17 @@ Chrome 连接只监听当前电脑的 `127.0.0.1`。不同电脑会在运行时�
 - 分析时实时显示初筛、详析、在途意见数、响应等待时间和重试倒计时；完成数按已保存结果更新
 - 创作者标题与观众评论分开分析
 - 多主题、主题级情绪、行为意图和证据门槛
-- 网页报告、Markdown 导出和本地文件夹入口
+- 网页报告、单文件 HTML / Markdown 导出和本地文件夹入口
 - 历史调查可直接浏览完整意见/来源记录，支持用户名、UID、评论 ID、正文和视频搜索，并可展开原始 JSON
 - 历史调查支持导出单次调查 ZIP，以及导入别人分享的调查；原始记录、分析结果、缓存和已有报告一起保存
+
+## 导出可离线阅读的 HTML 报告
+
+在报告页面点击“导出 HTML”，保存一个 `.html` 文件。CSS 样式、交互脚本、全部主题和各类情绪的完整证据都内嵌在文件中，无需另带 CSS、JavaScript 文件，也不依赖网络、EXE、Node.js 或本地服务。公司电脑可直接用 Chrome 或 Edge 打开该文件，并切换主题、查看正向 / 混合 / 负向 / 中性意见。
+
+报告包含样本判断、数据质量、AI 用量和费用、来源链接与样本限制。原文链接需要联网访问；报告本身可离线阅读。如果浏览器禁用 JavaScript，会按顺序展示全部主题与意见。“打印 / 保存 PDF”会打印全部主题和全部情绪证据，当前未选中的内容也会包含。HTML 使用经典报告样式。
+
+“导出 Markdown”保留文本报告导出。HTML 用于阅读已生成的报告；需要继续调查、重新分析或浏览完整原始记录时，请使用调查 ZIP 导入功能。
 
 ## 分享与导入调查
 
@@ -155,3 +164,69 @@ test/                           后端与端到端本地测试
 - 演示模式全部为虚构数据，报告会明确标注，不能用于真实判断。
 
 完整方案见 [docs/research-plan.md](docs/research-plan.md)，数据格式见 [docs/data-contract.md](docs/data-contract.md)。
+
+## Hosted browser version and Chrome extension
+
+The hosted build runs at `https://kashewt.com/naruto/`. It uses the same UI,
+analysis protocol, reports, and investigation ZIP format as the desktop app.
+The Windows EXE continues to use its existing local server, Chrome connection,
+and Windows-encrypted session; building the hosted version does not replace it.
+
+The browser version uses a Manifest V3 Chrome extension for Bilibili collection.
+Download the extension ZIP from the site's extension guide, extract it to a
+stable directory, open `chrome://extensions`, enable Developer mode, and select
+**Load unpacked** with the directory containing `manifest.json`. Sign into
+Bilibili in the same normal Chrome profile, refresh `/naruto/`, and connect the
+extension. The guide describes these steps in the UI. The distribution is an
+unpacked extension, not a Chrome Web Store publication.
+
+Investigations, original records, analysis caches, checkpoints, and reports are
+saved in this browser's IndexedDB on the user's device. Keep the investigation
+page open during collection and analysis. After closure, the next page load
+recovers unfinished work as paused; resuming reuses committed records and
+analysis caches. Export investigation ZIPs to back up or transfer records between
+the browser version and EXE. Clearing site data deletes local investigations.
+Browser storage is independent of the EXE's chosen filesystem directory.
+
+Archtree login uses the existing same-origin HttpOnly browser session. The
+extension never receives Archtree credentials or the OpenAI key. Browser
+analysis requests use `/naruto/api/v1/classify`; only bounded, de-identified
+classification fields go to Archtree. Archtree alone issues the provider API
+requests with its existing server-only key and fixed protocol.
+
+Build both hosted assets and the extension download:
+
+```powershell
+npm run build:hosted
+```
+
+Outputs are `web/hosted-dist/`, `build/chrome-extension/`, and
+`build/naruto-mobile-chrome-extension.zip`. These generated artifacts remain
+ignored. `npm run build` continues to produce the desktop bundle in `web/dist/`.
+For development, start Archtree locally on port 8080 and run:
+
+```powershell
+npm run dev:web -- --mode hosted
+```
+
+Open `http://127.0.0.1:5173/naruto/`; the extension supports local HTTP portals
+under `/naruto` on `localhost` or `127.0.0.1` at ports 5173, 3765, and 8080,
+plus the production origin. After preparing the hosted bundle in Archtree, its
+direct local entry is `http://localhost:8080/naruto`. Reload the extension and
+portal after rebuilding or replacing extension files. It accepts only bounded
+investigation commands and only navigates Bilibili URLs in its own collection tabs. Bilibili
+access refusals, login requirements, and page changes are surfaced as recoverable
+errors rather than bypassed.
+Extension `0.1.5` briefly activates an owned collection tab when background
+comments remain unreadable. These retries run one at a time inside the existing
+investigation group and restore the prior tab only if the user has not changed
+the selection. They require no additional extension permissions.
+Extension `0.1.6` also accepts a rendered zero-comment count paired with the
+loaded end-of-comments footer, preventing completed empty videos from remaining
+pending indefinitely.
+Extension `0.1.7` opens browser collection and login checks in separate new normal
+Chrome windows without requesting focus. Parallel collection tabs share one
+dedicated window and the orange investigation group. Comment retries change
+selection only inside that window. The user's existing window keeps its active
+tab. Cleanup closes only verified owned tabs; user-added or repurposed tabs keep
+their window open.

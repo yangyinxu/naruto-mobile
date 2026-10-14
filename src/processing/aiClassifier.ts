@@ -1,4 +1,3 @@
-import {createHash} from 'node:crypto';
 import {
   AiClassificationCacheRecord,
   AiAnalysisActivity,
@@ -337,10 +336,16 @@ const retryDelayMs = (error: unknown, attempt: number) => {
   return Math.max(1_000 * (2 ** attempt), explicit || 0, fromMessage + 750);
 };
 
+/** Recognizes transport failures from Node and Chrome without retrying unrelated TypeErrors. */
+const isFetchTransportError = (error: unknown) => error instanceof TypeError
+  && (error.message === 'fetch failed' || error.message === 'Failed to fetch'
+    || (error.message === 'terminated' && error.cause !== null && typeof error.cause === 'object'
+      && 'code' in error.cause && error.cause.code === 'UND_ERR_SOCKET'));
+
 const isRetryable = (error: unknown) => error instanceof AiRequestError
   ? error.retryable
   : error instanceof Error && (error.name === 'TimeoutError'
-    || (error instanceof TypeError && error.message === 'fetch failed'));
+    || isFetchTransportError(error));
 
 const isBatchReducible = (error: unknown) => error instanceof AiBatchValidationError
   || (error instanceof AiRequestError && error.batchReducible)
@@ -618,10 +623,23 @@ export class AiClassifier {
       } : directBody),
       signal: AbortSignal.timeout(usingProxy ? 115_000 : 120_000)
     };
-    const response = usingProxy
-      ? await this.options.proxy!.request(url, init)
-      : await this.fetchImpl(url, init);
-    const value = await response.json().catch(() => ({})) as OpenAiResponse & ProxyResponse;
+    let response: Response;
+    let value: OpenAiResponse & ProxyResponse;
+    try {
+      response = usingProxy
+        ? await this.options.proxy!.request(url, init)
+        : await this.fetchImpl(url, init);
+      value = await response.json().catch((error: unknown) => {
+        // Malformed JSON follows validation; interrupted body reads still need transport recovery.
+        if (error instanceof SyntaxError) return {};
+        throw error;
+      }) as OpenAiResponse & ProxyResponse;
+    } catch (error) {
+      if (isFetchTransportError(error)) {
+        throw new AiRequestError('分析请求的网络连接中断。已保存的原始数据和分析缓存会保留，请检查网络后点击“继续分析并生成报告”。', true);
+      }
+      throw error;
+    }
     if (!response.ok) {
       const code = usingProxy ? value.code : value.error?.code;
       const retryAfter = response.headers.get('retry-after');
@@ -680,7 +698,7 @@ export class AiClassifier {
     return {text: responseText(value), usage: value.usage};
   }
 
-  private hashInput(opinion: OpinionRecord, content: ContentRecord, parentText?: string) {
+  private async hashInput(opinion: OpinionRecord, content: ContentRecord, parentText?: string) {
     const value = JSON.stringify({
       promptVersion: AI_PROMPT_VERSION,
       triageVersion: AI_TRIAGE_VERSION,
@@ -688,7 +706,9 @@ export class AiClassifier {
       reasoningEffort: this.reasoningEffort,
       input: this.inputFor(opinion, content, parentText)
     });
-    return createHash('sha256').update(value).digest('hex');
+    // WebCrypto uses the same UTF-8 bytes and SHA-256 as the desktop cache.
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
   private parseDetailResults(text: string, batch: OpinionTask[]) {
@@ -951,7 +971,7 @@ export class AiClassifier {
       if (!content) continue;
       const parentText = opinion.parentSourceRecordId
         ? textBySourceId.get(opinion.parentSourceRecordId) : undefined;
-      const inputHash = this.hashInput(opinion, content, parentText);
+      const inputHash = await this.hashInput(opinion, content, parentText);
       const cached = cacheByKey.get(`${opinion.id}:${inputHash}`);
       if (cached) {
         classifications.set(opinion.id, cached);

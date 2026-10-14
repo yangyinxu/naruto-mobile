@@ -43,6 +43,58 @@ const chromeProps = () => ({
 });
 
 describe('NewResearch', () => {
+  it('uses the shared browser login without collecting a password in the hosted UI', () => {
+    render(<NewResearch {...chromeProps()} settings={{...settings, runtime: 'browser', dataRoot: '当前浏览器本地存储', analysis: {...settings.analysis, aiConfigured: false, transport: 'proxy', loginRequired: true}}} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByRole('link', {name: '前往 Archtree 登录'})).toHaveAttribute('href', '/auth/login-web?returnTo=%2Fnaruto%2F');
+    expect(screen.queryByLabelText('Archtree 密码')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: '选择存放位置'})).not.toBeInTheDocument();
+    expect(screen.getByText(/清除网站数据会删除本地调查/)).toBeVisible();
+    expect(screen.getByText(/采集在独立的新 Chrome 窗口中运行/)).toBeVisible();
+    expect(screen.getByRole('button', {name: '连接扩展并检查 B站'})).toBeVisible();
+    expect(screen.getByRole('button', {name: '登录 Archtree 后开始'})).toBeDisabled();
+    expect(screen.getByText('gpt-6-luna · 需要登录 Archtree')).toBeVisible();
+    expect(screen.queryByText(/AI 分析服务暂不可用/)).not.toBeInTheDocument();
+  });
+
+  it.each(['browser', 'desktop'] as const)('explains unavailable AI service for a signed-in %s proxy user', (runtime) => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch {...chromeProps()} settings={{...settings, runtime, analysis: {...settings.analysis,
+      aiConfigured: false, transport: 'proxy', loginRequired: false,
+      account: {userId: '64b000000000000000000001', email: 'friend@example.com', role: 'user'}}}}
+      busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByText('friend@example.com · 登录有效')).toBeVisible();
+    expect(screen.getByText('gpt-6-luna · AI 分析服务暂不可用')).toBeVisible();
+    expect(screen.getByText('AI 分析服务暂不可用，请稍后重试。')).toBeVisible();
+    const start = screen.getByRole('button', {name: 'AI 分析服务暂不可用'});
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', {name: '登录 Archtree 后开始'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', {name: '前往 Archtree 登录'})).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Archtree 密码')).not.toBeInTheDocument();
+  });
+
+  it('keeps direct desktop configuration guidance when no AI key is configured', () => {
+    render(<NewResearch {...chromeProps()} settings={{...settings, runtime: 'desktop',
+      analysis: {...settings.analysis, aiConfigured: false, transport: 'direct'}}}
+      busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByText('gpt-6-luna · 需要配置 OpenAI API 密钥')).toBeVisible();
+    expect(screen.getByRole('button', {name: '配置 AI 后开始'})).toBeDisabled();
+    expect(screen.queryByText(/AI 分析服务暂不可用/)).not.toBeInTheDocument();
+  });
+
+  it('can start a local demo while the signed-in proxy AI service is unavailable', () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<NewResearch {...chromeProps()} settings={{...settings, runtime: 'browser', analysis: {...settings.analysis,
+      aiConfigured: false, transport: 'proxy', loginRequired: false,
+      account: {userId: '64b000000000000000000001', email: 'friend@example.com', role: 'user'}}}}
+      busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    fireEvent.click(screen.getByText('本地演示'));
+    const start = screen.getByRole('button', {name: '开始调查'});
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({mode: 'demo', browserWindowCount: 1}));
+  });
   it('enables the game prefix by default and submits the previewed topic searches', () => {
     const onStart = vi.fn().mockResolvedValue(undefined);
     render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={onStart} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
@@ -259,6 +311,8 @@ describe('NewResearch', () => {
       onOpenGuide={vi.fn()}
     />);
     expect(screen.getByText('friend@example.com · 登录有效')).toBeVisible();
+    expect(screen.getByText('gpt-6-luna 已就绪')).toBeVisible();
+    expect(screen.getByRole('button', {name: '开始调查'})).toBeEnabled();
     fireEvent.click(screen.getByRole('button', {name: /退出或更换账号/}));
     await vi.waitFor(() => expect(onLogoutAnalysis).toHaveBeenCalledOnce());
   });

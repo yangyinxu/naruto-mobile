@@ -1,0 +1,1440 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
+import {test} from 'node:test';
+import {runInNewContext} from 'node:vm';
+import {build} from 'esbuild';
+import {CHANNEL, collectionInput, contentUrl, isBilibiliUrl, isExtensionRequest, isPortalUrl, searchUrls, stableBrowserId} from '../src/browserExtension/protocol';
+import {readContentPage, readLoginPage, readSearchPage} from '../src/browserExtension/pageScripts';
+
+const request = {name: 'Synthetic test', durationMinutes: 5, contentWindowDays: 30,
+  keywords: ['火影手游'], includeVideos: true, includeDynamics: true, mode: 'live',
+  browserVisible: true, browserWindowCount: 4, maxSources: 20};
+const input = () => ({manifest: {id: '20261013T200000-12345678', request: {...request}},
+  checkpoint: {schemaVersion: 1, pendingCandidates: [], seenContentIds: [], seenOpinionIds: [], activeElapsedMs: 0, updatedAt: new Date().toISOString()}});
+
+test('portal and command permissions reject lookalikes, unexpected ports, frames and arbitrary methods', () => {
+  for (const url of ['https://kashewt.com/naruto', 'https://kashewt.com/naruto/history', 'http://127.0.0.1:5173/naruto/', 'http://localhost:3765/naruto']) assert.equal(isPortalUrl(url), true);
+  for (const url of ['https://kashewt.com/narutox', 'https://kashewt.com/finitude', 'https://kashewt.com.evil.test/naruto', 'http://kashewt.com/naruto', 'http://localhost:80/naruto', 'http://127.0.0.1:5173/', 'https://user@kashewt.com/naruto']) assert.equal(isPortalUrl(url), false);
+  const message = {channel: CHANNEL, direction: 'request', id: 'fixture-1', method: 'status'};
+  assert.equal(isExtensionRequest(message), true);
+  assert.equal(isExtensionRequest({...message, method: 'executeJavaScript'}), false);
+  assert.equal(isExtensionRequest({...message, direction: 'response'}), false);
+  assert.equal(isExtensionRequest({...message, url: 'https://evil.test'}), false);
+});
+
+test('the local Archtree portal on port 8080 is accepted without granting other origins or paths', () => {
+  for (const host of ['localhost', '127.0.0.1']) {
+    for (const suffix of ['', '/', '/history?view=local']) {
+      assert.equal(isPortalUrl(`http://${host}:8080/naruto${suffix}`), true);
+    }
+    for (const url of [`http://${host}:8081/naruto`, `https://${host}:8080/naruto`,
+      `http://${host}:8080/narutox`, `http://${host}:8080/finitude`, `http://user@${host}:8080/naruto`]) {
+      assert.equal(isPortalUrl(url), false);
+    }
+  }
+  assert.equal(isPortalUrl('http://localhost.evil.test:8080/naruto'), false);
+  assert.equal(isPortalUrl('http://192.168.1.10:8080/naruto'), false);
+});
+
+test('canonical navigation and checkpoints reject foreign, credentialed and arbitrary Bilibili links', () => {
+  assert.equal(contentUrl('https://www.bilibili.com/video/BV123456/?tracking=x', 'video'), 'https://www.bilibili.com/video/BV123456');
+  assert.equal(contentUrl('https://t.bilibili.com/123456789', 'dynamic'), 'https://t.bilibili.com/123456789');
+  for (const value of ['https://evil.test/video/BV123456', 'https://www.bilibili.com/account', 'javascript:alert(1)', 'https://user@www.bilibili.com/video/BV123456', 'https://www.bilibili.com:8443/video/BV123456']) assert.equal(contentUrl(value, 'video'), undefined);
+  assert.equal(isBilibiliUrl('https://api.bilibili.com/x/web-interface/nav'), true);
+  assert.equal(isBilibiliUrl('https://api.bilibili.com.evil.test/'), false);
+  assert.equal(collectionInput(input()).manifest.request.browserWindowCount, 4);
+  assert.equal(collectionInput({...input(), manifest: {...input().manifest, request: {...request, durationMinutes: 725}}}).manifest.request.durationMinutes, 725);
+  assert.throws(() => collectionInput({...input(), manifest: {...input().manifest, request: {...request, durationMinutes: Number.MAX_SAFE_INTEGER}}}));
+  assert.throws(() => collectionInput({...input(), manifest: {...input().manifest, id: '../escape'}}));
+  assert.throws(() => collectionInput({...input(), checkpoint: {...input().checkpoint, activeElapsedMs: NaN}}));
+  assert.throws(() => collectionInput({...input(), checkpoint: {...input().checkpoint, pendingCandidates: [{id: 'BV123456', type: 'video', url: 'https://evil.test/video/BV123456', title: 'bad', discoveryKeyword: '火影手游', discoveryRank: 1}]}}));
+});
+
+test('search settings and stable IDs preserve desktop collection and cache contracts', async () => {
+  const values = searchUrls(collectionInput(input()).manifest.request, Date.UTC(2026, 9, 13));
+  assert.equal(values.length, 2);
+  assert.equal(new URL(values[0].url).searchParams.get('order'), 'click');
+  assert.equal(new URL(values[0].url).searchParams.get('keyword'), '火影手游');
+  assert.equal(Number(new URL(values[0].url).searchParams.get('pubtime_end_s')) - Number(new URL(values[0].url).searchParams.get('pubtime_begin_s')), 30 * 86400);
+  assert.equal(await stableBrowserId('BV123456', 'comment', '123456789'), createHash('sha256').update(['BV123456', 'comment', '123456789'].join('\0')).digest('base64url').slice(0, 24));
+});
+
+const require = createRequire(import.meta.url);
+const {JSDOM} = require('jsdom') as {JSDOM: new (html: string, options?: {url: string}) => {window: Window & typeof globalThis; close?: () => void}};
+async function withDocument<T>(html: string, fn: () => T | Promise<T>) {
+  const dom = new JSDOM(html, {url: 'https://www.bilibili.com/video/BV123456'});
+  const previousDocument = globalThis.document;
+  const previousLocation = globalThis.location;
+  Object.defineProperty(globalThis, 'document', {value: dom.window.document, configurable: true});
+  Object.defineProperty(globalThis, 'location', {value: dom.window.location, configurable: true});
+  try { return await fn(); }
+  finally {
+    Object.defineProperty(globalThis, 'document', {value: previousDocument, configurable: true});
+    Object.defineProperty(globalThis, 'location', {value: previousLocation, configurable: true});
+    dom.window.close();
+  }
+}
+
+test('login parser returns an allowlisted public account summary without cookies or full UID', async () => {
+  const account = await withDocument('<pre>{"code":0,"data":{"isLogin":true,"uname":"Fixture","mid":12345678,"cookie":"never-return"}}</pre>', readLoginPage);
+  assert.deepEqual(account, {loginState: 'logged_in', accountName: 'Fixture', accountUidSuffix: '5678'});
+  assert.equal(JSON.stringify(account).includes('never-return'), false);
+  await withDocument('<pre>{"code":-101}</pre>', () => assert.deepEqual(readLoginPage(), {loginState: 'logged_out'}));
+});
+
+test('synthetic DOM keeps comments, nested replies, author fields, counts, dates and search links', async () => {
+  await withDocument(`<title>Fixture_哔哩哔哩</title><meta property="og:description" content="Fixture description">
+    <meta itemprop="datePublished" content="2026-10-12T08:00:00+08:00">
+    <div><a title="Video" href="https://www.bilibili.com/video/BV123456">Video</a> 2026-10-12</div>
+    <div class="reply-item" data-rpid="101"><a href="https://space.bilibili.com/1234" class="user-name">Alice</a><span class="reply-content">技能后摇太长</span><span class="like">1.2万</span><time>2026-10-12</time></div>
+    <div class="sub-reply-item" data-rpid="102" data-parent-id="101"><span class="user-name">Bob</span><span class="sub-reply-content">确实无法反打</span><span class="like">3</span></div>`, async () => {
+    assert.equal(readSearchPage('video')[0].title, 'Video');
+    const data = await readContentPage();
+    assert.equal(data.title, 'Fixture');
+    assert.equal(data.description, 'Fixture description');
+    assert.equal(data.comments.length, 2);
+    assert.equal(data.comments[0].authorUid, '1234');
+    assert.equal(data.comments[0].sourceRecordId, '101');
+    assert.equal(data.comments[0].likes, 12000);
+    assert.equal(data.comments[1].parentSourceRecordId, '101');
+    assert.equal(data.comments[1].isReply, true);
+    assert.equal(data.comments[0].publishedAtText, '2026-10-12');
+  });
+});
+
+test('open ShadowRoot fixture preserves Bilibili component public backing fields', async () => {
+  await withDocument('<title>Shadow fixture</title><bili-comments></bili-comments>', async () => {
+    const list = document.querySelector('bili-comments')!.attachShadow({mode: 'open'});
+    const host = document.createElement('bili-comment-renderer');
+    Object.assign(host, {__data: {rpid_str: '9007199254740993', member: {mid: '88', uname: 'Shadow author'}, ctime: 1791849600, like: 4}});
+    list.append(host);
+    const root = host.attachShadow({mode: 'open'});
+    const rich = document.createElement('bili-rich-text');
+    root.append(rich);
+    rich.attachShadow({mode: 'open'}).innerHTML = '<span id="contents">有原因的玩家反馈</span>';
+    const data = await readContentPage();
+    assert.equal(data.comments.length, 1);
+    assert.equal(data.comments[0].sourceRecordId, '9007199254740993');
+    assert.equal(data.comments[0].authorName, 'Shadow author');
+    assert.equal(data.comments[0].publishedAtEpochSeconds, 1791849600);
+  });
+});
+
+const workerBundle = build({entryPoints: [resolve('src/browserExtension/background.ts')], bundle: true, platform: 'browser', format: 'iife', write: false, target: 'chrome120', keepNames: false}).then((value) => value.outputFiles![0].text);
+function chromeFixture() {
+  const tabs = new Map<number, {id: number; url: string; status: string; windowId: number; groupId: number; active?: boolean; pendingUrl?: string}>([
+    [1, {id: 1, url: 'https://www.bilibili.com/video/BVUserTab', status: 'complete', windowId: 1, groupId: 70}],
+    [2, {id: 2, url: 'https://kashewt.com/naruto/', status: 'complete', windowId: 1, groupId: -1, active: true}]]);
+  const groups = new Map<number, {windowId: number; title: string; color: string; collapsed: boolean}>([
+    [70, {windowId: 1, title: 'User group', color: 'blue', collapsed: true}]]);
+  const windows = new Map<number, {id: number; focused: boolean; type: string}>([[1, {id: 1, focused: true, type: 'normal'}]]);
+  const windowCreates: Array<{id: number; url: string; type: string; focused: boolean; initialTab: number}> = [];
+  const tabCreates: Array<{windowId: number; active: boolean}> = [];
+  let nextWindowId = 1000;
+  let windowCreateCalls = 0;
+  let failWindowCreateAt = 0;
+  let failTabCreate = false;
+  let closeSearchWindow = false;
+  const grouped: Array<{tabId: number; groupId: number; windowId: number}> = [];
+  const groupUpdates: Array<{id: number; title: string; color: string; collapsed: boolean}> = [];
+  let nextGroupId = 100;
+  let groupingCalls = 0;
+  let failGroupingAt = 0;
+  let failGroupUpdateAt = 0;
+  let foreignOnUpdate = 0;
+  let moveSearchGroup = false;
+  let moveSearchWindow = false;
+  let failRemovalId: number | undefined;
+  let failLookupAfterLogin = false;
+  let pendingLookupFailure = false;
+  let updateCalls = 0;
+  let failUpdateAt = 0;
+  let driftContentUrls: 'same_content' | 'different_content' | 'pending_foreign' | undefined;
+  let missingContentResult = false;
+  let needsForeground = false;
+  let activationFails = false;
+  let onActiveQuery: (() => void) | undefined;
+  let onForegroundRead: ((id: number) => Promise<void>) | undefined;
+  let onBackgroundProbe: ((id: number) => void) | undefined;
+  const activations: number[] = [];
+  const activationListeners = new Set<(info: {tabId: number; windowId: number}) => void>();
+  const contentReads: Array<{tabId: number; active: boolean; retry: boolean}> = [];
+  const probedContent = new Set<string>();
+  const updated: number[] = [];
+  const removed: number[] = [];
+  const output: Array<Record<string, unknown>> = [];
+  let nextId = 10;
+  let connection: (port: unknown) => void = () => undefined;
+  let listener: (value: unknown) => void = () => undefined;
+  let disconnectListener: () => void = () => undefined;
+  let failContent = false;
+  let failSearch = false;
+  let loggedIn = true;
+  let sourceCount = 4;
+  let publishedAt: string | undefined;
+  let includeDynamic = false;
+  let repurposeLogin = false;
+  let repurposeDiscovery = false;
+  let repurposeFinalContent = false;
+  let redirectDynamic = false;
+  let hasLoginResult = false;
+  let loginResult: unknown;
+  let connectionWrite: (() => Promise<void>) | undefined;
+  let ownedWrite: ((value: Record<string, unknown>) => Promise<void>) | undefined;
+  const contentOverrides = new Map<string, Record<string, unknown>>();
+  const executions: Array<{name: string; world: string}> = [];
+  const session: Record<string, unknown> = {};
+  const chrome = {runtime: {id: 'fixture-extension', onConnect: {addListener: (fn: typeof connection) => {connection = fn;}}},
+    windows: {create: async (options: {url: string; type: string; focused: boolean}) => {
+      windowCreateCalls += 1;
+      if (windowCreateCalls === failWindowCreateAt) throw new Error('synthetic window creation failure');
+      assert.equal(options.url, 'about:blank'); assert.equal(options.type, 'normal'); assert.equal(options.focused, false);
+      assert.equal(Object.keys(options).sort().join(','), 'focused,type,url');
+      const window = {id: nextWindowId++, focused: options.focused, type: options.type};
+      windows.set(window.id, window);
+      const tab = {id: nextId++, url: options.url, status: 'complete', windowId: window.id, groupId: -1, active: true};
+      tabs.set(tab.id, tab);
+      windowCreates.push({...options, id: window.id, initialTab: tab.id});
+      return {...window, tabs: [{...tab}]};
+    }},
+    storage: {session: {get: async () => session, set: async (value: Record<string, unknown>) => {
+      if (Object.hasOwn(value, 'connection')) await connectionWrite?.();
+      if (Object.hasOwn(value, 'ownedTabs')) await ownedWrite?.(value);
+      if (driftContentUrls && Array.isArray(value.ownedTabs)) {
+        for (const owned of value.ownedTabs as Array<{id: number; url: string}>) {
+          const tab = tabs.get(owned.id);
+          // A real page can replace its URL after complete was observed but before extraction.
+          if (tab?.url === owned.url && /^https:\/\/www\.bilibili\.com\/video\/BVFixture\d+$/.test(owned.url)) {
+            if (driftContentUrls === 'same_content') tab.url = `${owned.url}/?vd_source=synthetic`;
+            else if (driftContentUrls === 'different_content') tab.url = 'https://www.bilibili.com/video/BVManual';
+            else tab.pendingUrl = 'https://evil.test/';
+          }
+        }
+      }
+      Object.assign(session, value);
+    }}},
+    tabs: {onActivated: {addListener: (callback: (info: {tabId: number; windowId: number}) => void) => activationListeners.add(callback),
+      removeListener: (callback: (info: {tabId: number; windowId: number}) => void) => activationListeners.delete(callback)},
+    query: async ({active, windowId}: {active: boolean; windowId: number}) => {
+      onActiveQuery?.();
+      return [...tabs.values()].filter((tab) => tab.windowId === windowId && Boolean(tab.active) === active).map((tab) => ({...tab}));
+    }, get: async (id: number) => {
+      if (pendingLookupFailure) {pendingLookupFailure = false; throw new Error('synthetic temporary lookup failure');}
+      if (!tabs.has(id)) throw new Error(`No tab with id: ${id}.`);
+      return {...tabs.get(id)!};
+    },
+      create: async ({url, windowId, active}: {url: string; windowId: number; active: boolean}) => {
+        tabCreates.push({windowId, active});
+        if (!windows.has(windowId) || failTabCreate) throw new Error('synthetic tool window unavailable');
+        const tab = {id: nextId++, url, status: 'complete', windowId, groupId: -1, active}; tabs.set(tab.id, tab); return {...tab};
+      },
+      group: async ({tabIds, groupId, createProperties}: {tabIds: number; groupId?: number; createProperties?: {windowId: number}}) => {
+        groupingCalls += 1;
+        if (groupingCalls === failGroupingAt) throw new Error('synthetic grouping error');
+        assert.notEqual(tabIds, 1); assert.notEqual(tabIds, 2);
+        const tab = tabs.get(tabIds)!;
+        const id = groupId ?? nextGroupId++;
+        if (groupId === undefined) groups.set(id, {windowId: createProperties!.windowId, title: '', color: 'grey', collapsed: false});
+        assert.equal(groups.get(id)?.windowId, tab.windowId);
+        tab.groupId = id;
+        grouped.push({tabId: tabIds, groupId: id, windowId: tab.windowId});
+        return id;
+      },
+      update: async (id: number, {url, active}: {url?: string; active?: boolean}) => {
+        if (active) {
+          if (activationFails && id !== 2) throw new Error('private activation diagnostic');
+          const tab = tabs.get(id)!;
+          for (const value of tabs.values()) if (value.windowId === tab.windowId) value.active = value.id === id;
+          activations.push(id);
+          for (const callback of activationListeners) callback({tabId: id, windowId: tab.windowId});
+          return {...tab};
+        }
+        assert.equal(typeof url, 'string');
+        assert.notEqual(id, 1);
+        updateCalls += 1;
+        if (updateCalls === failUpdateAt) throw new Error('Tabs cannot be edited right now.');
+        updated.push(id);
+        tabs.get(id)!.url = repurposeFinalContent && url!.endsWith('/video/BVFixture0') ? 'https://www.bilibili.com/video/BVManual'
+          : redirectDynamic && url!.startsWith('https://t.bilibili.com/') ? 'https://www.bilibili.com/opus/1234567890123' : url!;
+        tabs.get(id)!.status = 'complete'; delete tabs.get(id)!.pendingUrl; return tabs.get(id);
+      },
+      remove: async (id: number) => {
+        assert.notEqual(id, 1); assert.notEqual(id, 2); assert.notEqual(id, 90);
+        if (id === failRemovalId) throw new Error('synthetic tab removal error');
+        const groupId = tabs.get(id)?.groupId;
+        const windowId = tabs.get(id)?.windowId;
+        removed.push(id); tabs.delete(id);
+        if (groupId !== undefined && ![...tabs.values()].some((tab) => tab.groupId === groupId)) groups.delete(groupId);
+        if (windowId !== undefined && ![...tabs.values()].some((tab) => tab.windowId === windowId)) windows.delete(windowId);
+      }},
+    tabGroups: {update: async (id: number, options: {title: string; color: string; collapsed: boolean}) => {
+      groupUpdates.push({id, ...options});
+      if (groupUpdates.length === failGroupUpdateAt) throw new Error('synthetic group update error');
+      const group = groups.get(id)!;
+      Object.assign(group, options);
+      if (groupUpdates.length === foreignOnUpdate) {
+        tabs.set(90, {id: 90, url: 'https://www.bilibili.com/video/BVForeign', status: 'complete', windowId: group.windowId, groupId: id});
+        group.title = 'User renamed group';
+      }
+      return {...group};
+    }},
+    scripting: {executeScript: async ({func, args, target, world}: {func: {name: string}; args?: unknown[]; target: {tabId: number}; world: string}) => {
+      executions.push({name: func.name, world});
+      if (func.name === 'readLoginPage') {
+        if (failLookupAfterLogin) pendingLookupFailure = true;
+        if (repurposeLogin) {tabs.get(target.tabId)!.pendingUrl = 'https://www.bilibili.com/video/BVManual'; tabs.get(target.tabId)!.status = 'loading';}
+        if (hasLoginResult) return [{result: loginResult}];
+        return [{result: loggedIn ? {loginState: 'logged_in', accountName: 'Fixture', accountUidSuffix: '5678'} : {loginState: 'logged_out'}}];
+      }
+      if (func.name === 'readSearchPage') {
+        if (failSearch) throw new Error('synthetic search failure');
+        if (repurposeDiscovery && args?.[0] === 'dynamic') {tabs.get(target.tabId)!.pendingUrl = 'https://www.bilibili.com/video/BVManual'; tabs.get(target.tabId)!.status = 'loading';}
+        if (moveSearchGroup) tabs.get(target.tabId)!.groupId = 70;
+        if (moveSearchWindow) tabs.get(target.tabId)!.windowId = 2;
+        if (closeSearchWindow) {
+          const windowId = tabs.get(target.tabId)!.windowId;
+          for (const [id, tab] of tabs) if (tab.windowId === windowId) tabs.delete(id);
+          windows.delete(windowId);
+        }
+        if (includeDynamic && args?.[0] === 'dynamic') return [{result: [{href: redirectDynamic ? 'https://t.bilibili.com/1234567890123' : 'https://www.bilibili.com/opus/1234567890123', title: 'Dynamic fixture', context: ''}]}];
+        return [{result: Array.from({length: sourceCount}, (_value, i) => ({href: `https://www.bilibili.com/video/BVFixture${i}`, title: `Source ${i}`, context: ''}))}];
+      }
+      if (failContent) throw new Error('private upstream diagnostic should not escape');
+      if (missingContentResult) return [{result: null}];
+      const isActive = Boolean(tabs.get(target.tabId)!.active);
+      const resolvedUrl = tabs.get(target.tabId)!.url;
+      const key = `${target.tabId}:${resolvedUrl}`;
+      const retry = probedContent.has(key);
+      probedContent.add(key);
+      contentReads.push({tabId: target.tabId, active: isActive, retry});
+      if (needsForeground && !retry) {
+        onBackgroundProbe?.(target.tabId);
+        return [{result: {title: 'Fixture source', description: '', resolvedUrl, commentState: 'not_ready', comments: []}}];
+      }
+      if (isActive) await onForegroundRead?.(target.tabId);
+      const contentId = resolvedUrl.match(/\/(BV\w+|\d+)$/)?.[1] || '';
+      if (needsForeground && !isActive) return [{result: {title: 'Fixture source', description: '', resolvedUrl, commentState: 'not_ready', comments: []}}];
+      return [{result: {title: 'Fixture source', description: '', publishedAt, resolvedUrl, commentState: 'loaded',
+        comments: [{text: '有原因的玩家反馈', sourceRecordId: '123456', authorUid: '88', authorName: 'Fixture author', likes: 1, replies: 0, isReply: false}],
+        ...contentOverrides.get(contentId)}}];
+    }}};
+  const port = {name: CHANNEL, sender: {id: 'fixture-extension', frameId: 0, tab: {id: 2, windowId: 1}, url: 'https://kashewt.com/naruto/'},
+    postMessage: (value: Record<string, unknown>) => output.push(value), disconnect: () => disconnectListener(),
+    onMessage: {addListener: (fn: typeof listener) => {listener = fn;}}, onDisconnect: {addListener: (fn: () => void) => {disconnectListener = fn;}}};
+  return {chrome, tabs, groups, grouped, groupUpdates, updated, removed, output, port, executions, session, activations, contentReads,
+    windows, windowCreates, tabCreates,
+    failWindowCreateAt: (call: number) => {failWindowCreateAt = call;}, failTabCreate: () => {failTabCreate = true;},
+    closeSearchWindow: () => {closeSearchWindow = true;},
+    needsForeground: () => {needsForeground = true;}, failActivation: () => {activationFails = true;},
+    onActiveQuery: (callback: () => void) => {onActiveQuery = callback;},
+    onForegroundRead: (callback: (id: number) => Promise<void>) => {onForegroundRead = callback;},
+    onBackgroundProbe: (callback: (id: number) => void) => {onBackgroundProbe = callback;},
+    activationListeners,
+    selectTab: (id: number) => {
+      for (const tab of tabs.values()) if (tab.windowId === tabs.get(id)?.windowId) tab.active = tab.id === id;
+      for (const callback of activationListeners) callback({tabId: id, windowId: tabs.get(id)!.windowId});
+    },
+    attach: () => connection(port), disconnect: () => disconnectListener(),
+    send: (method: string, payload?: unknown, id = method) => listener({channel: CHANNEL, direction: 'request', id, method, payload}),
+    fail: () => {failContent = true;}, failSearch: () => {failSearch = true;}, logout: () => {loggedIn = false;},
+    loginResult: (value: unknown) => {hasLoginResult = true; loginResult = value;},
+    contentSnapshot: (id: string, value: Record<string, unknown>) => {contentOverrides.set(id, value);},
+    failGroupingAt: (call: number) => {failGroupingAt = call;}, failGroupUpdateAt: (call: number) => {failGroupUpdateAt = call;},
+    foreignOnUpdate: (call: number) => {foreignOnUpdate = call;},
+    moveSearchGroup: () => {moveSearchGroup = true;}, moveSearchWindow: () => {moveSearchWindow = true;},
+    failRemoval: (id?: number) => {failRemovalId = id;},
+    failLookupAfterLogin: () => {failLookupAfterLogin = true;},
+    failUpdateAt: (call: number) => {failUpdateAt = call;},
+    driftContentUrls: (mode: 'same_content' | 'different_content' | 'pending_foreign' = 'same_content') => {driftContentUrls = mode;},
+    missingContentResult: () => {missingContentResult = true;},
+    holdNavigationWrite: (url: string) => {
+      let attempted = false;
+      let release: () => void = () => undefined;
+      const pending = new Promise<void>((resolveWrite) => {release = resolveWrite;});
+      ownedWrite = async (value) => {
+        if (!(value.ownedTabs as Array<{url: string}>).some((item) => item.url === url)) return;
+        attempted = true; await pending;
+      };
+      return {attempted: () => attempted, release: () => {ownedWrite = undefined; release();}};
+    },
+    failNavigationWrite: (url: string) => {
+      ownedWrite = async (value) => {
+        if (!(value.ownedTabs as Array<{url: string}>).some((item) => item.url === url)) return;
+        ownedWrite = undefined;
+        throw new Error('synthetic ownership write failure');
+      };
+    },
+    holdConnectionWrite: () => {
+      let attempted = false;
+      let rejectWrite: (error: Error) => void = () => undefined;
+      const pending = new Promise<void>((_resolveWrite, reject) => {rejectWrite = reject;});
+      connectionWrite = async () => {attempted = true; await pending;};
+      return {attempted: () => attempted, fail: () => {
+        connectionWrite = undefined;
+        rejectWrite(new Error('扩展本地连接状态暂时无法保存。'));
+      }};
+    },
+    sources: (count: number) => {sourceCount = count;}, expired: () => {publishedAt = '2000-01-01T00:00:00Z';}, dynamic: () => {includeDynamic = true;},
+    repurposeLogin: () => {repurposeLogin = true;}, repurposeDiscovery: () => {repurposeDiscovery = true;},
+    repurposeFinalContent: () => {repurposeFinalContent = true;}, redirectDynamic: () => {includeDynamic = true; redirectDynamic = true;}};
+}
+async function until(fn: () => boolean) {
+  for (let i = 0; i < 1000; i += 1) { if (fn()) return; await new Promise((resolveWait) => setTimeout(resolveWait, 2)); }
+  assert.fail('Mock extension operation did not finish');
+}
+async function loadWorker(fixture: ReturnType<typeof chromeFixture>, clock: {new(): Date; now(): number} = Date) {
+  runInNewContext(await workerBundle, {chrome: fixture.chrome, URL, Date: clock, Promise, Map, Set, Number, Object, String, Error, Array,
+    crypto, TextEncoder, btoa, structuredClone, setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms === 12_000 ? 100 : Math.min(ms, 2)), clearTimeout});
+  fixture.attach();
+}
+
+test('a delayed source retries only inside its new investigation window and preserves portal selection', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.deepEqual(fixture.contentReads.map((value) => value.retry), [false, true]);
+  assert.deepEqual(fixture.activations, [11]);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 2);
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('four foreground retries serialize their reads and restore the original active tab', async () => {
+  const fixture = chromeFixture();
+  fixture.needsForeground();
+  let concurrent = 0;
+  let maximum = 0;
+  fixture.onForegroundRead(async () => {
+    concurrent += 1;
+    maximum = Math.max(maximum, concurrent);
+    await new Promise((resolveRead) => setTimeout(resolveRead, 5));
+    concurrent -= 1;
+  });
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'source_exhausted');
+  assert.equal(maximum, 1);
+  assert.equal(fixture.contentReads.filter((value) => value.retry).length, 4);
+  assert.equal(fixture.activations.filter((id) => id === 11).length, 4);
+  assert.equal(fixture.activations.includes(2), false);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 4);
+});
+
+test('foreground recovery respects user selection and never restores over a different active tab', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  fixture.onForegroundRead(async () => {fixture.selectTab(1);});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.deepEqual(fixture.activations, [11]);
+  assert.equal(fixture.tabs.get(1)?.active, true);
+  assert.equal(fixture.tabs.get(1)?.url, 'https://www.bilibili.com/video/BVUserTab');
+  assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  assert.equal(fixture.activationListeners.size, 0);
+});
+
+test('foreground recovery does not restore after the user leaves and deliberately returns to the retry tab', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  fixture.onBackgroundProbe((id) => {
+    fixture.tabs.set(90, {id: 90, url: 'https://www.bilibili.com/video/BVForeign', status: 'complete',
+      windowId: fixture.tabs.get(id)!.windowId, groupId: -1});
+    fixture.selectTab(90);
+  });
+  fixture.onForegroundRead(async (id) => {fixture.selectTab(90); fixture.selectTab(id);});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.deepEqual(fixture.activations, [11]);
+  assert.equal(fixture.activationListeners.size, 0);
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'source_exhausted');
+  assert.equal(fixture.tabs.size, 3);
+  assert.equal(fixture.windows.has(fixture.windowCreates[1].id), true);
+});
+
+test('foreground recovery restores selection only within its tool window and preserves foreign tabs there', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  fixture.onBackgroundProbe((id) => {
+    fixture.tabs.set(90, {id: 90, url: 'https://www.bilibili.com/video/BVForeign', status: 'complete',
+      windowId: fixture.tabs.get(id)!.windowId, groupId: -1});
+    fixture.selectTab(90);
+  });
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.deepEqual(fixture.activations, [11, 90]);
+  assert.equal(fixture.tabs.get(90)?.active, true);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+  assert.equal(fixture.tabs.size, 3);
+  assert.equal(fixture.windows.has(fixture.windowCreates[1].id), true);
+  assert.equal(fixture.windows.get(1)?.focused, true);
+});
+
+test('failed foreground activation keeps sources pending and exposes only a fixed diagnostic', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  fixture.failActivation();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+  assert.equal(complete.checkpoint.seenContentIds.length, 0);
+  assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+  const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {details: {reason: string; stage: string}};
+  assert.equal(warning.details.reason, 'foreground_activation_failed');
+  assert.equal(warning.details.stage, 'foreground');
+  assert.equal(JSON.stringify(fixture.output).includes('private activation diagnostic'), false);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+});
+
+test('foreground recovery fences ownership again after querying the active tab', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.needsForeground();
+  fixture.onActiveQuery(() => {fixture.tabs.get(11)!.groupId = 70;});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.deepEqual(fixture.activations, []);
+  assert.equal(fixture.tabs.has(11), true);
+  assert.equal(fixture.tabs.get(11)?.groupId, 70);
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+  assert.equal((fixture.output.find((value) => value.type === 'warning')!.payload as {details: {reason: string}}).details.reason, 'ownership_changed');
+});
+
+test('queued foreground recoveries stop after pause or portal disconnect', async () => {
+  for (const stop of ['pause', 'disconnect'] as const) {
+    const fixture = chromeFixture();
+    fixture.needsForeground();
+    fixture.onForegroundRead(async () => {
+      if (stop === 'pause') {
+        fixture.send('pause', {runId: input().manifest.id});
+        await until(() => fixture.output.some((value) => value.id === 'pause'));
+      } else fixture.disconnect();
+    });
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => fixture.contentReads.some((value) => value.retry));
+    if (stop === 'pause') await until(() => fixture.output.some((value) => value.type === 'complete'));
+    else await until(() => fixture.tabs.size === 2);
+    assert.equal(fixture.contentReads.filter((value) => value.retry).length, 1);
+    assert.equal(fixture.activations.filter((id) => id !== 2).length, 1);
+    assert.equal(fixture.tabs.get(2)?.active, true);
+  }
+});
+
+test('queued foreground recoveries stop when the active time budget expires', async () => {
+  const fixture = chromeFixture();
+  fixture.needsForeground();
+  let offset = 0;
+  class Clock extends Date {static now() {return Date.now() + offset;}}
+  fixture.onForegroundRead(async () => {offset = 300_000;});
+  await loadWorker(fixture, Clock);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'budget_exhausted');
+  assert.equal(fixture.contentReads.filter((value) => value.retry).length, 1);
+  assert.equal(complete.checkpoint.pendingCandidates.length, 3);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+});
+
+test('a timed out foreground native reader prevents another activation until it settles', async () => {
+  const fixture = chromeFixture();
+  fixture.needsForeground();
+  let release: () => void = () => undefined;
+  fixture.onForegroundRead(() => new Promise<void>((resolveRead) => {release = resolveRead;}));
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal(fixture.contentReads.filter((value) => value.retry).length, 1);
+  assert.deepEqual(fixture.activations, [11]);
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(fixture.output.some((value) => value.type === 'warning'
+    && (value.payload as {details?: {reason: string}}).details?.reason === 'injection_timeout'), true);
+  release();
+});
+
+test('a first null login result leaves a valid disconnected status and an explicit retry can connect', async () => {
+  const fixture = chromeFixture();
+  fixture.loginResult(null);
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.match(String(fixture.output.find((value) => value.id === 'connect')!.error), /B站.*(?:读取|格式|状态)/);
+  fixture.send('status');
+  await until(() => fixture.output.some((value) => value.id === 'status'));
+  const disconnected = fixture.output.find((value) => value.id === 'status')!.result as Record<string, unknown>;
+  assert.equal(disconnected.state, 'ready');
+  assert.equal(disconnected.connected, false);
+  assert.equal(disconnected.loginState, 'logged_out');
+  assert.equal(disconnected.commentReadiness, 1);
+  assert.equal(disconnected.isolatedCollectionWindow, 1);
+  assert.equal(disconnected.extensionVersion, '0.1.7');
+  assert.match(String(disconnected.message), /0\.1\.7/);
+  assert.equal(disconnected.activeInvestigations, 0);
+  assert.equal(disconnected.accountName, undefined);
+  assert.equal(fixture.session.connection, undefined);
+  assert.equal(fixture.tabs.size, 2);
+  fixture.loginResult({loginState: 'logged_in', accountName: 'Fixture', accountUidSuffix: '5678'});
+  fixture.send('connect', undefined, 'retry-connect');
+  await until(() => fixture.output.some((value) => value.id === 'retry-connect'));
+  const retry = fixture.output.find((value) => value.id === 'retry-connect')!.result as Record<string, unknown>;
+  assert.equal(retry.state, 'connected');
+  assert.equal(retry.connected, true);
+  assert.equal(retry.loginState, 'logged_in');
+  assert.equal(retry.commentReadiness, 1);
+  assert.equal(retry.isolatedCollectionWindow, 1);
+  assert.equal(retry.extensionVersion, '0.1.7');
+  assert.match(String(retry.message), /0\.1\.7/);
+  assert.equal(retry.accountName, 'Fixture');
+  assert.equal(retry.accountUidSuffix, '5678');
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('a failed connection persistence write never publishes a replacement account', async () => {
+  for (const previouslyConnected of [false, true]) {
+    const fixture = chromeFixture();
+    await loadWorker(fixture);
+    if (previouslyConnected) {
+      fixture.send('connect');
+      await until(() => fixture.output.some((value) => value.id === 'connect'));
+    }
+    fixture.send('status', undefined, 'previous-status');
+    await until(() => fixture.output.some((value) => value.id === 'previous-status'));
+    const previousStatus = JSON.stringify(fixture.output.find((value) => value.id === 'previous-status')!.result);
+    const previousConnection = JSON.stringify(fixture.session.connection);
+    const write = fixture.holdConnectionWrite();
+    fixture.loginResult({loginState: 'logged_in', accountName: 'Replacement', accountUidSuffix: '4321'});
+    fixture.send('connect', undefined, 'connect-with-write-failure');
+    await until(write.attempted);
+    fixture.send('status', undefined, 'status-during-write');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+    assert.equal(fixture.output.some((value) => value.id === 'connect-with-write-failure'), false);
+    assert.equal(fixture.output.some((value) => value.id === 'status-during-write'), false);
+    assert.equal(JSON.stringify(fixture.session.connection), previousConnection);
+    write.fail();
+    await until(() => fixture.output.some((value) => value.id === 'status-during-write'));
+    const failed = fixture.output.find((value) => value.id === 'connect-with-write-failure')!;
+    assert.equal(typeof failed.error, 'string');
+    assert.equal(failed.result, undefined);
+    assert.equal(JSON.stringify(fixture.output.find((value) => value.id === 'status-during-write')!.result), previousStatus);
+    assert.equal(JSON.stringify(fixture.session.connection), previousConnection);
+    assert.equal(JSON.stringify(fixture.output).includes('Replacement'), false);
+    assert.equal(fixture.tabs.size, 2);
+  }
+});
+
+test('missing or malformed login script results preserve the prior valid account and status', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal((fixture.output.find((value) => value.id === 'connect')!.result as {connected: boolean}).connected, true);
+  const previousConnection = JSON.stringify(fixture.session.connection);
+  const malformed = [null, undefined, false, 1, [], {}, {loginState: 'unknown'}, {loginState: 'logged_in'},
+    {loginState: 'logged_in', accountName: 4, accountUidSuffix: '5678'},
+    {loginState: 'logged_in', accountName: 'Fixture', accountUidSuffix: '123456'}];
+  for (const [index, value] of malformed.entries()) {
+    fixture.loginResult(value);
+    const connectId = `invalid-login-${index}`;
+    fixture.send('connect', undefined, connectId);
+    await until(() => fixture.output.some((response) => response.id === connectId));
+    const response = fixture.output.find((item) => item.id === connectId)!;
+    assert.match(String(response.error), /B站.*(?:读取|格式|状态)/, `malformed login case ${index}`);
+    assert.equal(response.result, undefined);
+    const statusId = `status-after-invalid-login-${index}`;
+    fixture.send('status', undefined, statusId);
+    await until(() => fixture.output.some((item) => item.id === statusId));
+    const status = fixture.output.find((item) => item.id === statusId)!.result as Record<string, unknown>;
+    assert.equal(status.state, 'connected');
+    assert.equal(status.connected, true);
+    assert.equal(status.loginState, 'logged_in');
+    assert.equal(status.accountName, 'Fixture');
+    assert.equal(status.accountUidSuffix, '5678');
+    assert.equal(JSON.stringify(fixture.session.connection), previousConnection);
+    assert.equal(fixture.tabs.size, 2);
+  }
+});
+
+test('extra login fields never escape through connection responses or session storage', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  fixture.loginResult({loginState: 'logged_in', accountName: 'Fixture', accountUidSuffix: '5678',
+    mid: '12345678', cookie: 'fixture-private-cookie', token: 'fixture-private-token'});
+  fixture.send('connect', undefined, 'connect-with-private-fields');
+  await until(() => fixture.output.some((value) => value.id === 'connect-with-private-fields'));
+  fixture.send('status', undefined, 'status-after-private-fields');
+  await until(() => fixture.output.some((value) => value.id === 'status-after-private-fields'));
+  const status = fixture.output.find((value) => value.id === 'status-after-private-fields')!.result as Record<string, unknown>;
+  assert.equal(status.loginState, 'logged_in');
+  assert.equal(status.accountName, 'Fixture');
+  assert.equal(status.accountUidSuffix, '5678');
+  for (const value of [fixture.output, fixture.session]) {
+    const serialized = JSON.stringify(value);
+    assert.equal(serialized.includes('fixture-private'), false);
+    assert.equal(serialized.includes('12345678'), false);
+    assert.equal(serialized.includes('"cookie"'), false);
+    assert.equal(serialized.includes('"token"'), false);
+    assert.equal(serialized.includes('"mid"'), false);
+  }
+});
+
+test('mocked MV3 worker completes four collectors and only closes its own tabs', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: {seenContentIds: string[]}};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.seenContentIds.length, 4);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 4);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 8);
+  assert.equal(fixture.tabs.has(1), true);
+  assert.equal(fixture.removed.length, 5);
+  assert.equal(JSON.stringify(fixture.output).includes('cookie'), false);
+  assert.equal(fixture.executions.filter((execution) => execution.name === 'readLoginPage').every((execution) => execution.world === 'ISOLATED'), true);
+  const contentExecutions = fixture.executions.filter((execution) => execution.name === 'readContentPage');
+  assert.ok(contentExecutions.length > 0);
+  assert.equal(contentExecutions.every((execution) => execution.world === 'MAIN'), true);
+  const collectionGroups = fixture.grouped.slice(1);
+  assert.equal(collectionGroups.length, 4);
+  assert.equal(new Set(collectionGroups.map((item) => item.groupId)).size, 1);
+  assert.equal(collectionGroups.every((item) => item.windowId === fixture.windowCreates[1].id), true);
+  assert.equal(fixture.groupUpdates.length, 2);
+  assert.equal(fixture.groupUpdates.every((group) => group.title === '火影调查' && group.color === 'orange' && !group.collapsed), true);
+  assert.deepEqual(fixture.groups.get(70), {windowId: 1, title: 'User group', color: 'blue', collapsed: true});
+  assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  assert.equal(fixture.tabs.get(2)?.groupId, -1);
+});
+
+test('same-content URL drift after navigation does not cause an extraction failure burst or leak tool tabs', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(8);
+  fixture.driftContentUrls();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+  assert.equal(complete.checkpoint.seenContentIds.length, 8);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 8);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 16);
+  assert.equal(fixture.output.some((value) => value.type === 'warning'), false);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('late navigation to a different source or pending foreign URL remains fenced', async () => {
+  for (const mode of ['different_content', 'pending_foreign'] as const) {
+    const fixture = chromeFixture();
+    fixture.sources(1);
+    fixture.driftContentUrls(mode);
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => fixture.output.some((value) => value.type === 'complete'));
+    const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+    assert.equal(complete.outcome, 'paused');
+    assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+    assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+    const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {details: {stage: string; reason: string}};
+    assert.equal(warning.details.stage, 'injection');
+    assert.equal(warning.details.reason, 'ownership_changed');
+    assert.equal(fixture.tabs.has(11), true);
+    assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  }
+});
+
+test('login and collection use only new unfocused windows and never adopt user or portal tabs', async () => {
+  const fixture = chromeFixture();
+  fixture.port.sender.tab.windowId = 8;
+  fixture.tabs.get(2)!.windowId = 8;
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.ok(fixture.grouped.length > 1);
+  assert.equal(fixture.windowCreates.length, 2);
+  assert.equal(fixture.windowCreates.every((window) => window.focused === false && window.type === 'normal' && ![1, 8].includes(window.id)), true);
+  assert.equal(fixture.grouped.every((item) => fixture.windowCreates.some((window) => window.id === item.windowId) && ![1, 2].includes(item.tabId)), true);
+  assert.equal(fixture.tabCreates.length, 3);
+  assert.equal(fixture.tabCreates.every((tab) => tab.windowId === fixture.windowCreates[1].id && tab.active === false), true);
+  assert.equal(fixture.windowCreates.every((window) => fixture.grouped.some((tab) => tab.tabId === window.initialTab)), true);
+  assert.equal(fixture.windows.size, 1);
+  assert.equal(fixture.windows.get(1)?.focused, true);
+  assert.equal(fixture.tabs.get(2)?.active, true);
+  assert.equal(fixture.tabs.get(1)?.windowId, 1);
+  assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  assert.equal(fixture.tabs.get(2)?.groupId, -1);
+});
+
+test('new window creation failures never create tabs in an existing browser window', async () => {
+  for (const call of [1, 2]) {
+    const fixture = chromeFixture();
+    fixture.failWindowCreateAt(call);
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => call === 1 ? fixture.output.some((value) => value.id === 'start')
+      : fixture.output.some((value) => value.type === 'complete'));
+    if (call === 1) assert.equal(typeof fixture.output.find((value) => value.id === 'start')!.error, 'string');
+    else assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+    assert.equal(fixture.tabCreates.length, 0);
+    assert.equal(fixture.tabs.size, 2);
+    assert.equal(fixture.windows.size, 1);
+    assert.equal(fixture.tabs.get(2)?.active, true);
+  }
+});
+
+test('additional tab creation failure closes only the owned initial tab and retains discovered sources', async () => {
+  const fixture = chromeFixture();
+  fixture.failTabCreate();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(fixture.windowCreates.length, 2);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(fixture.windows.size, 1);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('a user-closed investigation window pauses without recreating it or adopting another window', async () => {
+  const fixture = chromeFixture();
+  fixture.closeSearchWindow();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(fixture.windowCreates.length, 2);
+  assert.equal(fixture.tabCreates.length, 0);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(fixture.windows.size, 1);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('group creation or metadata failures clean up the newly created login tab', async () => {
+  for (const failMetadata of [false, true]) {
+    const fixture = chromeFixture();
+    if (failMetadata) fixture.failGroupUpdateAt(1); else fixture.failGroupingAt(1);
+    await loadWorker(fixture);
+    fixture.send('connect');
+    await until(() => fixture.output.some((value) => value.id === 'connect'));
+    assert.equal(fixture.output.find((value) => value.id === 'connect')!.error, '无法创建火影调查标签组，请检查扩展权限后重试。');
+    assert.equal(fixture.tabs.size, 2);
+    assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+    assert.deepEqual(fixture.groups.get(70), {windowId: 1, title: 'User group', color: 'blue', collapsed: true});
+  }
+});
+
+test('a later grouping failure pauses with every discovered candidate still pending', async () => {
+  const fixture = chromeFixture();
+  fixture.failGroupingAt(3);
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(complete.checkpoint.seenContentIds.length, 0);
+  assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('cleanup preserves user-added tabs and a renamed group without another metadata update', async () => {
+  const fixture = chromeFixture();
+  fixture.foreignOnUpdate(2);
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const groupId = fixture.tabs.get(90)!.groupId;
+  assert.equal(fixture.grouped.slice(1).every((item) => item.groupId === groupId), true);
+  assert.equal(fixture.groupUpdates.filter((item) => item.id === groupId).length, 1);
+  assert.equal(fixture.groups.get(groupId)?.title, 'User renamed group');
+  assert.equal(fixture.tabs.get(90)?.url, 'https://www.bilibili.com/video/BVForeign');
+  assert.equal(fixture.tabs.size, 3);
+});
+
+test('a regrouped or moved owned anchor is preserved and never admits new tool tabs to its old group', async () => {
+  for (const moveWindow of [false, true]) {
+    const fixture = chromeFixture();
+    fixture.foreignOnUpdate(2);
+    if (moveWindow) fixture.moveSearchWindow(); else fixture.moveSearchGroup();
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => fixture.output.some((value) => value.type === 'complete'));
+    const oldGroupId = fixture.grouped[1].groupId;
+    assert.equal(fixture.grouped.length, 2);
+    assert.equal(fixture.tabCreates.length, 0);
+    assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+    assert.equal(fixture.removed.includes(11), false);
+    assert.equal(fixture.updated.filter((id) => id === 11).length, 1);
+    assert.equal(fixture.tabs.get(11)?.windowId, moveWindow ? 2 : fixture.windowCreates[1].id);
+    assert.equal(fixture.tabs.get(11)?.groupId, moveWindow ? oldGroupId : 70);
+    assert.equal(fixture.tabs.has(90), true);
+    assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  }
+});
+
+test('legacy cleanup only reclaims an ungrouped tool tab and preserves a user-grouped tab', async () => {
+  const fixture = chromeFixture();
+  fixture.tabs.set(50, {id: 50, url: 'https://api.bilibili.com/x/web-interface/nav', status: 'complete', windowId: 1, groupId: -1});
+  fixture.session.ownedTabs = [{id: 1, url: fixture.tabs.get(1)!.url}, {id: 50, url: fixture.tabs.get(50)!.url}];
+  await loadWorker(fixture);
+  fixture.send('status');
+  await until(() => fixture.output.some((value) => value.id === 'status'));
+  assert.equal(fixture.tabs.has(50), false);
+  assert.equal(fixture.tabs.has(1), true);
+  assert.equal(fixture.tabs.get(1)?.groupId, 70);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('startup cleanup retains no unprocessed legacy tail beyond the former twelve-tab limit', async () => {
+  const fixture = chromeFixture();
+  const records = Array.from({length: 15}, (_value, index) => ({id: 50 + index, url: 'https://api.bilibili.com/x/web-interface/nav'}));
+  for (const record of records) fixture.tabs.set(record.id, {...record, status: 'complete', windowId: 1, groupId: -1});
+  fixture.session.ownedTabs = records;
+  await loadWorker(fixture);
+  fixture.send('status');
+  await until(() => fixture.output.some((value) => value.id === 'status'));
+  assert.equal(records.some((record) => fixture.tabs.has(record.id)), false);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('an oversized cleanup registry is preserved untouched instead of dropping its tail', async () => {
+  const fixture = chromeFixture();
+  fixture.session.ownedTabs = Array.from({length: 129}, (_value, index) => ({id: 50 + index, url: 'https://api.bilibili.com/x/web-interface/nav'}));
+  const originalRegistry = JSON.stringify(fixture.session.ownedTabs);
+  await loadWorker(fixture);
+  fixture.send('status');
+  await until(() => fixture.output.some((value) => value.id === 'status'));
+  assert.equal(typeof fixture.output.find((value) => value.id === 'status')!.error, 'string');
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), originalRegistry);
+  assert.equal(fixture.removed.length, 0);
+});
+
+test('failed grouping cleanup retains its lifecycle record until a worker retry can remove the tab', async () => {
+  const fixture = chromeFixture();
+  fixture.failGroupingAt(1);
+  fixture.failRemoval(10);
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal(fixture.tabs.has(10), true);
+  assert.equal((fixture.session.ownedTabs as Array<{id: number}>).some((item) => item.id === 10), true);
+  fixture.failRemoval();
+  await loadWorker(fixture);
+  fixture.send('status', undefined, 'after-cleanup-retry');
+  await until(() => fixture.output.some((value) => value.id === 'after-cleanup-retry'));
+  assert.equal(fixture.tabs.has(10), false);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('an unknown cleanup lookup failure preserves ownership for the next worker retry', async () => {
+  const fixture = chromeFixture();
+  fixture.failLookupAfterLogin();
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal(fixture.output.find((value) => value.id === 'connect')!.error, '调查标签页状态暂时无法确认，请稍后重试清理。');
+  assert.equal(fixture.tabs.has(10), true);
+  assert.equal((fixture.session.ownedTabs as Array<{id: number}>).some((item) => item.id === 10), true);
+  await loadWorker(fixture);
+  fixture.send('status', undefined, 'after-lookup-retry');
+  await until(() => fixture.output.some((value) => value.id === 'after-lookup-retry'));
+  assert.equal(fixture.tabs.has(10), false);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+});
+
+test('a user regrouping a tab during a pending navigation checkpoint prevents the navigation', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  const write = fixture.holdNavigationWrite('https://www.bilibili.com/video/BVFixture0');
+  fixture.send('start', input());
+  await until(write.attempted);
+  const previousUrl = fixture.tabs.get(11)!.url;
+  const previousUpdates = fixture.updated.filter((id) => id === 11).length;
+  fixture.tabs.get(11)!.groupId = 70;
+  write.release();
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal(fixture.tabs.get(11)?.url, previousUrl);
+  assert.equal(fixture.updated.filter((id) => id === 11).length, previousUpdates);
+  assert.equal(fixture.removed.includes(11), false);
+  assert.equal(fixture.tabs.get(11)?.groupId, 70);
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal((complete.checkpoint.pendingCandidates as Array<{id: string}>).some((item) => item.id === 'BVFixture0'), true);
+});
+
+test('a failed pre-navigation ownership write still cleans up its blank grouped tab', async () => {
+  const fixture = chromeFixture();
+  fixture.failNavigationWrite('https://api.bilibili.com/x/web-interface/nav');
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal(typeof fixture.output.find((value) => value.id === 'connect')!.error, 'string');
+  assert.equal(fixture.updated.length, 0);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+  assert.equal(fixture.groups.size, 1);
+  assert.equal(fixture.groups.has(70), true);
+});
+
+test('a rejected login navigation cleans up the unchanged blank grouped tab', async () => {
+  const fixture = chromeFixture();
+  fixture.failUpdateAt(1);
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal(typeof fixture.output.find((value) => value.id === 'connect')!.error, 'string');
+  assert.equal(fixture.updated.length, 0);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+  assert.equal(fixture.groups.size, 1);
+});
+
+test('a rejected content navigation retains its candidate while cleaning up the unchanged tool tab', async () => {
+  const fixture = chromeFixture();
+  fixture.failUpdateAt(4);
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+  assert.equal(complete.checkpoint.seenContentIds.length, 3);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 3);
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+  assert.equal(fixture.groups.size, 1);
+  const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {details: {stage: string; reason: string}};
+  assert.equal(warning.details.stage, 'navigation');
+  assert.equal(warning.details.reason, 'navigation_failed');
+});
+
+test('failed sources remain retryable and upstream private diagnostics never reach the portal', async () => {
+  const fixture = chromeFixture();
+  fixture.fail();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: {pendingCandidates: unknown[]}};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(JSON.stringify(fixture.output).includes('private upstream diagnostic'), false);
+  const warnings = fixture.output.filter((value) => value.type === 'warning').map((value) => value.payload as {details?: {stage: string; reason: string}});
+  assert.equal(warnings.length, 4);
+  assert.equal(warnings.every((warning) => warning.details?.reason === 'injection_failed' && warning.details.stage === 'injection'), true);
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('a missing script result has a fixed diagnostic without leaking raw page data', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.missingContentResult();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+  const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {stage: string; reason: string}};
+  assert.equal(warning.details.stage, 'injection');
+  assert.equal(warning.details.reason, 'script_result_missing');
+  assert.equal(warning.message, 'B站页面未返回采集结果，已保留来源，请稍后继续采集。');
+  assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+});
+
+test('comments that are not ready retain only the failed source and resume without duplicating saved sources', async () => {
+  const fixture = chromeFixture();
+  fixture.contentSnapshot('BVFixture0', {commentState: 'not_ready', comments: []});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const paused = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(paused.outcome, 'paused');
+  assert.equal(paused.checkpoint.pendingCandidates.length, 1);
+  assert.equal((paused.checkpoint.pendingCandidates[0] as {id: string}).id, 'BVFixture0');
+  assert.equal(paused.checkpoint.seenContentIds.length, 3);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 3);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 6);
+  assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {id: string}).id === 'BVFixture0'), false);
+  assert.equal(fixture.output.some((value) => value.type === 'opinion' && (value.payload as {contentId: string}).contentId === 'BVFixture0'), false);
+  const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {contentId: string; reason: string}};
+  assert.equal(warning.message, 'B站评论尚未加载完成，已保留来源，请稍后继续采集。');
+  assert.equal(warning.details.reason, 'not_ready');
+  assert.equal(warning.details.contentId, 'BVFixture0');
+  fixture.contentSnapshot('BVFixture0', {});
+  fixture.send('resume', {...input(), checkpoint: paused.checkpoint});
+  await until(() => fixture.output.filter((value) => value.type === 'complete').length === 2);
+  const complete = fixture.output.filter((value) => value.type === 'complete')[1].payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+  assert.equal(complete.checkpoint.seenContentIds.length, 4);
+  assert.equal(complete.checkpoint.seenOpinionIds.length, 8);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 4);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 8);
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('a verification-required source stays pending without committing title-only content', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.contentSnapshot('BVFixture0', {commentState: 'verification_required', comments: []});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+  assert.equal(complete.checkpoint.seenContentIds.length, 0);
+  assert.equal(complete.checkpoint.seenOpinionIds.length, 0);
+  assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+  const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {reason: string}};
+  assert.equal(warning.message, 'B站要求人工验证，已保留来源，请在自己的浏览器完成后继续采集。');
+  assert.equal(warning.details.reason, 'verification_required');
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('an explicitly empty comment area commits its source and creator record', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.contentSnapshot('BVFixture0', {commentState: 'empty', comments: []});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+  assert.equal(complete.checkpoint.seenContentIds.length, 1);
+  assert.equal(complete.checkpoint.seenOpinionIds.length, 1);
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 1);
+  const opinions = fixture.output.filter((value) => value.type === 'opinion');
+  assert.equal(opinions.length, 1);
+  assert.equal((opinions[0].payload as {sourceType: string}).sourceType, 'creator_view');
+  assert.equal((fixture.output.find((value) => value.type === 'warning')!.payload as {message: string}).message,
+    '该来源显示暂无评论，已保留来源记录。');
+  assert.equal(fixture.tabs.size, 2);
+});
+
+test('missing, unknown or inconsistent comment states remain retryable without exposing diagnostics', async () => {
+  for (const snapshot of [{commentState: undefined}, {commentState: null}, {commentState: 'private upstream diagnostic'},
+    {commentState: 'loaded', comments: []}, {commentState: 'empty'}]) {
+    const fixture = chromeFixture();
+    fixture.sources(1);
+    fixture.contentSnapshot('BVFixture0', snapshot);
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => fixture.output.some((value) => value.type === 'complete'));
+    const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+    assert.equal(complete.outcome, 'paused');
+    assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+    assert.equal(complete.checkpoint.seenContentIds.length, 0);
+    assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+    const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {reason: string}};
+    assert.equal(warning.details.reason, 'invalid_snapshot');
+    assert.equal(warning.message, 'B站页面采集结果格式不正确，已保留来源，请稍后继续采集。');
+    assert.equal(JSON.stringify(fixture.output).includes('private upstream diagnostic'), false);
+    assert.equal(fixture.tabs.size, 2);
+  }
+});
+
+test('a loaded source with no valid viewer comments stays pending without a title-only commit', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.contentSnapshot('BVFixture0', {comments: [null, {text: 'private upstream diagnostic', likes: -1, replies: 0}]});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 1);
+  assert.equal(complete.checkpoint.seenContentIds.length, 0);
+  assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
+  assert.equal((fixture.output.find((value) => value.type === 'warning')!.payload as {details: {reason: string}}).details.reason, 'no_valid_comments');
+  assert.equal(JSON.stringify(fixture.output).includes('private upstream diagnostic'), false);
+});
+
+test('a loaded source accepts valid viewer comments while ignoring malformed siblings', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  fixture.contentSnapshot('BVFixture0', {comments: [null, {text: 'invalid fixture', likes: -1, replies: 0},
+    {text: '有效的公开意见', sourceRecordId: '1002', likes: 3, replies: 0, isReply: false}]});
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 2);
+  assert.equal(fixture.output.some((value) => value.type === 'opinion' && (value.payload as {sourceRecordId: string}).sourceRecordId === '1002'), true);
+  assert.equal(fixture.output.some((value) => value.type === 'warning'), false);
+});
+
+test('a repaired source with a changed page title preserves its original creator identity on resume', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(1);
+  const originalTitle = 'Previously saved source title';
+  const changedTitle = 'Changed page title';
+  const originalCreatorId = await stableBrowserId('BVFixture0', 'creator', originalTitle);
+  const changedCreatorId = await stableBrowserId('BVFixture0', 'creator', changedTitle);
+  fixture.contentSnapshot('BVFixture0', {title: changedTitle});
+  await loadWorker(fixture);
+  const resumeInput = input();
+  fixture.send('resume', {...resumeInput, checkpoint: {...resumeInput.checkpoint, seenOpinionIds: [originalCreatorId],
+    pendingCandidates: [{id: 'BVFixture0', type: 'video', url: 'https://www.bilibili.com/video/BVFixture0', title: originalTitle,
+      discoveryKeyword: '火影手游', discoveryRank: 1}]}});
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+  assert.equal(complete.checkpoint.seenOpinionIds.length, 2);
+  assert.equal(complete.checkpoint.seenOpinionIds.includes(originalCreatorId as never), true);
+  assert.equal(complete.checkpoint.seenOpinionIds.includes(changedCreatorId as never), false);
+  const opinions = fixture.output.filter((value) => value.type === 'opinion');
+  assert.equal(opinions.length, 1);
+  assert.equal((opinions[0].payload as {sourceType: string}).sourceType, 'comment');
+  assert.equal(fixture.output.some((value) => value.type === 'warning'), false);
+});
+
+test('pause and finalize are fenced to the originating portal and run', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.id === 'start' && value.direction === 'response'));
+  fixture.send('pause', {runId: 'wrong'}, 'wrong-pause');
+  fixture.send('finalize', {runId: input().manifest.id}, 'finalize');
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal(typeof fixture.output.find((value) => value.id === 'wrong-pause')!.error, 'string');
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'finalized');
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('a paused job resumes the saved candidates and preserves opinion deduplication', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.id === 'start' && value.direction === 'response'));
+  fixture.send('pause', {runId: input().manifest.id});
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const paused = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
+  assert.equal(paused.outcome, 'paused');
+  fixture.send('resume', {...input(), checkpoint: paused.checkpoint});
+  await until(() => fixture.output.filter((value) => value.type === 'complete').length === 2);
+  const complete = fixture.output.filter((value) => value.type === 'complete')[1].payload as {outcome: string};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 8);
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('resume completes dynamic discovery after an early pause without dropping old pending video sources', async () => {
+  const fixture = chromeFixture();
+  fixture.dynamic();
+  await loadWorker(fixture);
+  const resumeInput = input();
+  const pending = {id: 'BVFixture0', type: 'video', url: 'https://www.bilibili.com/video/BVFixture0', title: 'Existing video', discoveryKeyword: '火影手游', discoveryRank: 1};
+  fixture.send('resume', {...resumeInput, checkpoint: {...resumeInput.checkpoint, pendingCandidates: [pending]}});
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {checkpoint: {seenContentIds: string[]}};
+  assert.equal(complete.checkpoint.seenContentIds.length, 5);
+  assert.equal(fixture.output.filter((value) => value.type === 'content' && (value.payload as {id: string}).id === 'BVFixture0').length, 1);
+  assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {type: string}).type === 'dynamic'), true);
+  const contentIndex = fixture.output.findIndex((value) => value.type === 'content');
+  assert.equal(fixture.output.slice(0, contentIndex).some((value) => value.type === 'checkpoint'
+    && (value.payload as {pendingCandidates: unknown[]}).pendingCandidates.length === 5), true);
+});
+
+test('eight parallel collectors, portal departure and login rejection keep local ownership boundaries', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(8);
+  await loadWorker(fixture);
+  fixture.send('start', {...input(), manifest: {...input().manifest, request: {...request, browserWindowCount: 8}}});
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal(fixture.output.filter((value) => value.type === 'content').length, 8);
+  assert.equal(fixture.removed.length, 9);
+  assert.equal(fixture.tabs.has(1), true);
+  assert.equal(fixture.grouped.slice(1).length, 8);
+  assert.equal(new Set(fixture.grouped.slice(1).map((item) => item.groupId)).size, 1);
+  assert.equal(fixture.groupUpdates.length, 2);
+
+  const closed = chromeFixture();
+  await loadWorker(closed);
+  closed.send('start', input());
+  await until(() => closed.output.some((value) => value.id === 'start' && value.direction === 'response'));
+  closed.disconnect();
+  await until(() => closed.removed.length >= 2);
+  assert.equal(closed.output.some((value) => value.type === 'opinion'), false);
+  assert.equal(closed.tabs.has(1), true);
+
+  const loggedOut = chromeFixture();
+  loggedOut.logout();
+  await loadWorker(loggedOut);
+  loggedOut.send('start', input());
+  await until(() => loggedOut.output.some((value) => value.id === 'start' && value.direction === 'response'));
+  assert.equal(typeof loggedOut.output.find((value) => value.id === 'start')!.error, 'string');
+  assert.equal(loggedOut.updated.length, 1);
+  assert.equal(loggedOut.output.some((value) => value.type === 'content'), false);
+});
+
+test('total search failure pauses without inventing a successful empty investigation', async () => {
+  const fixture = chromeFixture();
+  fixture.failSearch();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+  assert.equal(fixture.output.some((value) => value.type === 'content'), false);
+});
+
+test('a source with an expired content date cannot create checkpoint references to unsaved records', async () => {
+  const fixture = chromeFixture();
+  fixture.expired();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: {seenContentIds: string[]; seenOpinionIds: string[]; pendingCandidates: unknown[]}};
+  assert.equal(complete.outcome, 'source_exhausted');
+  assert.equal(fixture.output.some((value) => value.type === 'content'), false);
+  assert.equal(complete.checkpoint.seenContentIds.length, 0);
+  assert.equal(complete.checkpoint.seenOpinionIds.length, 0);
+  assert.equal(complete.checkpoint.pendingCandidates.length, 0);
+});
+
+test('worker rejects a forged sender before accepting privileged commands', async () => {
+  const fixture = chromeFixture();
+  let rejected = false;
+  fixture.port.sender.url = 'https://evil.test/naruto';
+  fixture.port.disconnect = () => {rejected = true;};
+  await loadWorker(fixture);
+  assert.equal(rejected, true);
+  fixture.send('connect');
+  await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  assert.equal(fixture.updated.length, 0);
+});
+
+test('cleanup leaves a tool tab open when the user has a different navigation pending', async () => {
+  const fixture = chromeFixture();
+  fixture.repurposeLogin();
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal((fixture.output.find((value) => value.id === 'connect')!.result as {connected: boolean}).connected, true);
+  assert.equal(fixture.removed.length, 0);
+  assert.equal(fixture.tabs.get(10)?.url, 'https://api.bilibili.com/x/web-interface/nav');
+  assert.equal(fixture.tabs.get(10)?.pendingUrl, 'https://www.bilibili.com/video/BVManual');
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('collection cannot overwrite a user navigation pending in the old complete tool document', async () => {
+  const fixture = chromeFixture();
+  fixture.repurposeDiscovery();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: {pendingCandidates: unknown[]}};
+  assert.equal(complete.outcome, 'paused');
+  assert.equal(complete.checkpoint.pendingCandidates.length, 4);
+  assert.equal(fixture.updated.filter((id) => id === 11).length, 2);
+  assert.equal(fixture.removed.includes(11), false);
+  assert.equal(fixture.tabs.get(11)?.pendingUrl, 'https://www.bilibili.com/video/BVManual');
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('a different final Bilibili document is not adopted or closed as a tool-owned source', async () => {
+  const fixture = chromeFixture();
+  fixture.repurposeFinalContent();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+  assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {id: string}).id === 'BVFixture0'), false);
+  assert.equal(fixture.removed.includes(11), false);
+  assert.equal(fixture.tabs.get(11)?.url, 'https://www.bilibili.com/video/BVManual');
+});
+
+test('a same-ID dynamic canonical redirect remains collectible and safely cleaned up', async () => {
+  const fixture = chromeFixture();
+  fixture.redirectDynamic();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'source_exhausted');
+  const dynamic = fixture.output.find((value) => value.type === 'content' && (value.payload as {type: string}).type === 'dynamic')!.payload as {resolvedUrl: string};
+  assert.equal(dynamic.resolvedUrl, 'https://www.bilibili.com/opus/1234567890123');
+  assert.equal(fixture.tabs.size, 2);
+  assert.equal(fixture.tabs.has(1), true);
+});
+
+test('a suspended worker preserves only the public handshake and rechecks login for the next job', async () => {
+  const fixture = chromeFixture();
+  await loadWorker(fixture);
+  fixture.send('connect');
+  await until(() => fixture.output.some((value) => value.id === 'connect'));
+  assert.equal((fixture.output.find((value) => value.id === 'connect')!.result as {connected: boolean}).connected, true);
+  await loadWorker(fixture);
+  fixture.send('status', undefined, 'after-reload');
+  await until(() => fixture.output.some((value) => value.id === 'after-reload'));
+  assert.equal((fixture.output.find((value) => value.id === 'after-reload')!.result as {connected: boolean}).connected, true);
+  fixture.logout();
+  fixture.send('start', input(), 'start-after-logout');
+  await until(() => fixture.output.some((value) => value.id === 'start-after-logout'));
+  assert.equal(typeof fixture.output.find((value) => value.id === 'start-after-logout')!.error, 'string');
+  assert.equal(fixture.output.some((value) => value.type === 'content'), false);
+});
+
+test('portal content script rejects foreign sources and origins and forwards only pending replies', async () => {
+  const bundle = await build({entryPoints: [resolve('src/browserExtension/portal.ts')], bundle: true, platform: 'browser', format: 'iife', write: false, target: 'chrome120'});
+  let receive: (event: unknown) => void = () => undefined;
+  let portReceive: (message: unknown) => void = () => undefined;
+  const sent: unknown[] = [];
+  const posted: unknown[] = [];
+  const window = {top: null as unknown, addEventListener: (_name: string, fn: typeof receive) => {receive = fn;}, postMessage: (value: unknown, origin: string) => {assert.equal(origin, 'https://kashewt.com'); posted.push(value);}};
+  window.top = window;
+  runInNewContext(bundle.outputFiles![0].text, {window, location: {href: 'https://kashewt.com/naruto/', origin: 'https://kashewt.com'}, URL, Set,
+    chrome: {runtime: {connect: () => ({postMessage: (value: unknown) => sent.push(value), onMessage: {addListener: (fn: typeof portReceive) => {portReceive = fn;}}, onDisconnect: {addListener: () => undefined}})}}});
+  const message = {channel: CHANNEL, direction: 'request', id: 'request-1', method: 'status'};
+  receive({source: {}, origin: 'https://kashewt.com', data: message});
+  receive({source: window, origin: 'https://evil.test', data: message});
+  assert.equal(sent.length, 0);
+  receive({source: window, origin: 'https://kashewt.com', data: message});
+  assert.equal(sent.length, 1);
+  portReceive({channel: CHANNEL, direction: 'response', id: 'unsolicited', result: {connected: true}});
+  assert.equal(posted.length, 0);
+  portReceive({channel: CHANNEL, direction: 'response', id: 'request-1', result: {connected: true}});
+  assert.equal(posted.length, 1);
+});
+
+test('extension package grants no cookie, debugger, native messaging or general host permission', async () => {
+  const manifest = JSON.parse(await readFile(resolve('extension/manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.permissions, ['tabs', 'tabGroups', 'scripting', 'storage']);
+  assert.deepEqual(manifest.host_permissions, ['https://www.bilibili.com/*', 'https://search.bilibili.com/*', 'https://t.bilibili.com/*', 'https://api.bilibili.com/*']);
+  assert.equal(manifest.content_scripts[0].all_frames, false);
+});

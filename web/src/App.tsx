@@ -1,6 +1,7 @@
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {Archive, BookOpen, Flame, Palette, PlusCircle, X} from 'lucide-react';
 import {ChromeGuide} from './components/ChromeGuide';
+import {ExtensionGuide} from './components/ExtensionGuide';
 import {History} from './components/History';
 import {NewResearch} from './components/NewResearch';
 import {RecordsView} from './components/RecordsView';
@@ -32,12 +33,30 @@ export default function App() {
   const [connectingChrome, setConnectingChrome] = useState(false);
   const [error, setError] = useState('');
   const [skin, setSkin] = useState<Skin>(initialSkin);
+  const settingsGeneration = useRef(0);
+  const refreshSettings = useCallback(async () => {
+    const generation = ++settingsGeneration.current;
+    const next = await api.settings();
+    if (generation === settingsGeneration.current) setSettings(next);
+  }, []);
 
   const loadRuns = useCallback(() => api.listRuns().then(setRuns).catch((reason) => setError(reason.message)), []);
   useEffect(() => {
-    void api.settings().then(setSettings).catch((reason) => setError(reason.message));
+    void refreshSettings().catch((reason) => setError(reason.message));
     void loadRuns();
-  }, [loadRuns]);
+  }, [loadRuns, refreshSettings]);
+  useEffect(() => {
+    if (import.meta.env.MODE !== 'hosted') return;
+    const changed = () => {
+      // Remove the prior displayed identity before resolving the shared cookie session.
+      settingsGeneration.current += 1;
+      setSettings((current) => current?.analysis ? {...current, analysis: {...current.analysis,
+        account: undefined, aiConfigured: false, loginRequired: true}} : current);
+      void refreshSettings().catch((reason) => setError(reason.message));
+    };
+    window.addEventListener('naruto:analysis-account-change', changed);
+    return () => window.removeEventListener('naruto:analysis-account-change', changed);
+  }, [refreshSettings]);
   useEffect(() => {
     let active = true;
     const refresh = () => api.chromeStatus()
@@ -70,7 +89,7 @@ export default function App() {
       await loadRuns();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      void api.settings().then(setSettings).catch(() => undefined);
+      void refreshSettings().catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -112,7 +131,7 @@ export default function App() {
 
   const connectChrome = async () => {
     if (chromeStatus?.state === 'disconnecting') return;
-    if (!chromeStatus?.remoteDebuggingEnabled) {
+    if (settings?.runtime !== 'browser' && !chromeStatus?.remoteDebuggingEnabled) {
       setView('guide');
       await openChromeSettings();
       return;
@@ -120,7 +139,8 @@ export default function App() {
     setConnectingChrome(true);
     setError('');
     try {
-      setChromeStatus((current) => current ? {...current, state: 'connecting', message: '正在请求连接，请在 Chrome 弹窗中点击“允许”。'} : current);
+      setChromeStatus((current) => current ? {...current, state: 'connecting', message: settings?.runtime === 'browser'
+        ? '正在连接扩展并检查 B站登录状态，请稍候。' : '正在请求连接，请在 Chrome 弹窗中点击“允许”。'} : current);
       setChromeStatus(await api.connectChrome());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -165,13 +185,13 @@ export default function App() {
   const loginAnalysis = async (identifier: string, password: string) => {
     setError('');
     await api.loginAnalysis(identifier, password);
-    setSettings(await api.settings());
+    await refreshSettings();
   };
 
   const logoutAnalysis = async () => {
     setError('');
     await api.logoutAnalysis();
-    setSettings(await api.settings());
+    await refreshSettings();
   };
 
   const saveKeywords = async (preferences: KeywordSettings) => {
@@ -179,7 +199,7 @@ export default function App() {
     setSettings((current) => current ? {...current, defaults: {...current.defaults, ...saved}} : current);
   };
 
-  if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在启动本地调查工具…</strong></div>;
+  if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在打开本地调查数据…</strong>{error && <p role="alert">{error}</p>}</div>;
 
   return (
     <div className={`app-shell skin-${skin}`} data-skin={skin}>
@@ -187,7 +207,7 @@ export default function App() {
         <button className="brand" onClick={() => setView('new')}><span><Flame/></span><div><strong>火影手游</strong><small>玩家反馈调查工具</small></div></button>
         <nav>
           <button className={view === 'new' ? 'active' : ''} onClick={() => setView('new')}><PlusCircle/>新建调查</button>
-          <button className={`guide-nav ${view === 'guide' ? 'active' : ''}`} onClick={() => setView('guide')}><BookOpen/><span className="guide-nav-label"><b>Chrome </b>教程</span><span className="guide-nav-badge">首次必看</span></button>
+          <button className={`guide-nav ${view === 'guide' ? 'active' : ''}`} onClick={() => setView('guide')}><BookOpen/><span className="guide-nav-label"><b>{settings.runtime === 'browser' ? '扩展 ' : 'Chrome '}</b>教程</span><span className="guide-nav-badge">首次必看</span></button>
           <button className={view === 'history' ? 'active' : ''} onClick={() => {void loadRuns(); setView('history');}}><Archive/>历史调查{runs.length > 0 && <i>{runs.length}</i>}</button>
         </nav>
         <div className="topbar-tools">
@@ -199,18 +219,21 @@ export default function App() {
               <option value="shinobi">忍者密卷</option>
             </select>
           </label>
-          <div className="local-pill"><span/>本地运行</div>
+          <div className="local-pill"><span/>{settings.runtime === 'browser' ? '数据在本机' : '本地运行'}</div>
         </div>
       </header>
 
       {view === 'new' && (
         <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSaveKeywords={saveKeywords} onLoginAnalysis={loginAnalysis} onLogoutAnalysis={logoutAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
-      {view === 'guide' && (
+      {view === 'guide' && settings.runtime === 'browser' && (
+        <ExtensionGuide chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
+      )}
+      {view === 'guide' && settings.runtime !== 'browser' && (
         <ChromeGuide chromeSettingsSupported={(settings.apiVersion ?? 0) >= 6} chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onOpenChromeSettings={openChromeSettings} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'history' && (
-        <History runs={runs} archiveSupported={(settings.apiVersion ?? 0) >= 11} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder} onImport={importRun} onExport={(run) => api.exportRun(run.id)}/>
+        <History runs={runs} browserRuntime={settings.runtime === 'browser'} archiveSupported={(settings.apiVersion ?? 0) >= 11} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder} onImport={importRun} onExport={(run) => api.exportRun(run.id)}/>
       )}
       {view === 'run' && selected && (
         <RunDetail initial={selected} onBack={() => {void loadRuns(); setView('history');}} onReport={(run) => {setSelected(run); setView('report');}} onError={setError}/>

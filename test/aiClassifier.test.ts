@@ -1,5 +1,6 @@
 import {decisionsResponse} from './fixtures/decisionsResponse';
 import assert from 'node:assert/strict';
+import {createServer, ServerResponse} from 'node:http';
 import test from 'node:test';
 import {ContentRecord, OpinionRecord} from '../src/domain/types';
 import {AiClassificationProgress, AiClassifier} from '../src/processing/aiClassifier';
@@ -59,6 +60,18 @@ const aiResult = (opinionId: string, insightValue: 'strong' | 'weak') => ({
   confidence: 0.93,
   needsReview: insightValue === 'weak'
 });
+
+/** Successful proxy fixture with the protocol metadata required by both analysis stages. */
+const proxyResponse = (kind: 'triage' | 'detail', ids: string[]) => new Response(JSON.stringify({
+  protocolVersion: 1,
+  kind,
+  promptVersion: kind === 'triage' ? 'naruto-decisions-v1' : 'naruto-opinion-v4',
+  model: 'gpt-6-luna',
+  results: ids.map((opinionId) => kind === 'triage'
+    ? {opinionId, decision: 'analyze', gameRelevant: true, informationType: 'product_feedback', reasonCode: 'feedback'}
+    : aiResult(opinionId, 'strong')),
+  usage: {inputTokens: 100, outputTokens: 0, totalTokens: 100}
+}));
 
 test('keeps proxy detail batches within the server protocol limit', () => {
   const classifier = new AiClassifier({
@@ -656,6 +669,240 @@ test('retries transport failures and respects an HTTP-date Retry-After', async (
   assert.equal(attempts, 3);
   assert.equal(delays.length, 2);
   assert.ok(delays[1] >= 8_000);
+});
+
+test('retries Chrome fetch failures during proxy screening and detailed analysis', async () => {
+  for (const failedKind of ['triage', 'detail'] as const) {
+    const attempts = {triage: 0, detail: 0};
+    const delays: number[] = [];
+    const updates: AiClassificationProgress[] = [];
+    const classifier = new AiClassifier({concurrency: 1,
+      sleep: async (milliseconds) => {
+        delays.push(milliseconds);
+        const progress = updates.at(-1)!;
+        assert.equal(progress.completed, 0);
+        assert.equal(progress.activity?.stage, failedKind);
+        assert.equal(progress.activity?.retryingRequests, 1);
+        assert.equal(progress.activity?.inFlightRequests, 0);
+        assert.ok(Date.parse(progress.activity!.nextRetryAt!) >= Date.now() + 900);
+      },
+      proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+        if (++attempts[body.kind] === 1 && body.kind === failedKind) throw new TypeError('Failed to fetch');
+        return proxyResponse(body.kind, body.batch.map((item) => item.opinionId));
+      }}});
+    const output = await classifier.classifyAll([opinion({})], [content], [], async (progress) => {updates.push(progress);});
+    assert.deepEqual(attempts, failedKind === 'triage' ? {triage: 2, detail: 1} : {triage: 1, detail: 2});
+    assert.deepEqual(delays, [1_000]);
+    assert.equal(output.classifications[0].reportEligible, true);
+    assert.equal(updates.at(-1)?.completed, 1);
+    assert.equal(updates.at(-1)?.activity?.retryingRequests, 0);
+  }
+});
+
+test('exhausted Chrome screening failures retain comments for detailed analysis after six requests', async () => {
+  const attempts = {triage: 0, detail: 0};
+  const delays: number[] = [];
+  const classifier = new AiClassifier({sleep: async (milliseconds) => {delays.push(milliseconds);},
+    proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+      attempts[body.kind] += 1;
+      if (body.kind === 'triage') throw new TypeError('Failed to fetch');
+      return proxyResponse(body.kind, body.batch.map((item) => item.opinionId));
+    }}});
+  const output = await classifier.classifyAll([opinion({})], [content]);
+  assert.deepEqual(attempts, {triage: 6, detail: 1});
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 16_000]);
+  assert.equal(output.classifications[0].reportEligible, true);
+  assert.equal(output.fastTriageSkippedCount, 0);
+  assert.equal(output.detailedCount, 1);
+});
+
+test('exhausted Chrome detail failures drain successful concurrent cache writes and reuse them on resume', {timeout: 5_000}, async () => {
+  const opinions = ['one', 'two', 'three'].map((id) => opinion({id}));
+  const saved: Awaited<ReturnType<AiClassifier['classifyAll']>>['newCacheRecords'] = [];
+  const delays: number[] = [];
+  const requested: string[] = [];
+  let attempts = 0;
+  let sixthStarted!: () => void;
+  const sixthReady = new Promise<void>((resolve) => {sixthStarted = resolve;});
+  let failSixth!: () => void;
+  const failureGate = new Promise<void>((resolve) => {failSixth = resolve;});
+  let secondStarted!: () => void;
+  const secondReady = new Promise<void>((resolve) => {secondStarted = resolve;});
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => {releaseSecond = resolve;});
+  let cacheWriteStarted!: () => void;
+  const cacheWriteReady = new Promise<void>((resolve) => {cacheWriteStarted = resolve;});
+  let releaseCacheWrite!: () => void;
+  const cacheWriteGate = new Promise<void>((resolve) => {releaseCacheWrite = resolve;});
+  const classifier = new AiClassifier({concurrency: 2, batchSize: 1,
+    sleep: async (milliseconds) => {delays.push(milliseconds);},
+    proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+      const ids = body.batch.map((item) => item.opinionId);
+      if (body.kind === 'triage') return proxyResponse(body.kind, ids);
+      requested.push(ids[0]);
+      if (ids[0] === 'one') {
+        if (++attempts === 6) {sixthStarted(); await failureGate;}
+        throw new TypeError('Failed to fetch');
+      }
+      if (ids[0] === 'two') {secondStarted(); await secondGate;}
+      return proxyResponse(body.kind, ids);
+    }}});
+  let settled = false;
+  const pending = classifier.classifyAll(opinions, [content], [], async (_progress, records) => {
+    if (records.length) {
+      saved.push(...records);
+      cacheWriteStarted();
+      await cacheWriteGate;
+    }
+  }).then(() => {settled = true;}, (error) => {settled = true; throw error;});
+  const failed = assert.rejects(pending);
+  try {
+    await Promise.all([sixthReady, secondReady]);
+    failSixth();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'The already-sent successful request must finish before failure');
+    releaseSecond();
+    await cacheWriteReady;
+    assert.equal(settled, false, 'The successful cache write must finish before failure');
+    releaseCacheWrite();
+    await failed;
+  } finally {
+    failSixth();
+    releaseSecond();
+    releaseCacheWrite();
+    await failed;
+  }
+  assert.equal(attempts, 6);
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 16_000]);
+  assert.equal(requested.filter((id) => id === 'two').length, 1);
+  assert.ok(!requested.includes('three'), 'No new batch starts after retry exhaustion');
+  assert.deepEqual(saved.map((record) => record.opinionId), ['two']);
+  const resumedIds: string[] = [];
+  const resumed = new AiClassifier({batchSize: 1, proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+    const ids = body.batch.map((item) => item.opinionId);
+    assert.ok(!ids.includes('two'), 'Explicit resume must reuse the completed cache');
+    if (body.kind === 'detail') resumedIds.push(...ids);
+    return proxyResponse(body.kind, ids);
+  }}});
+  const output = await resumed.classifyAll(opinions, [content], saved);
+  assert.equal(output.cachedCount, 1);
+  assert.equal(output.classifications.length, 3);
+  assert.deepEqual(resumedIds, ['one', 'three']);
+});
+
+test('does not retry programming errors or explicit aborts during proxy requests or response decoding', async () => {
+  for (const failedKind of ['triage', 'detail'] as const) {
+    for (const phase of ['request', 'response'] as const) {
+      for (const error of [new TypeError('programming defect'), new TypeError('terminated'), new DOMException('cancelled', 'AbortError')]) {
+        const attempts = {triage: 0, detail: 0};
+        const classifier = new AiClassifier({sleep: async () => {assert.fail(`${error.name} must not retry`);},
+          proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+            const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+            attempts[body.kind] += 1;
+            if (body.kind === failedKind) {
+              if (phase === 'request') throw error;
+              return new Response(new ReadableStream({start(controller) {controller.error(error);}}));
+            }
+            return proxyResponse(body.kind, body.batch.map((item) => item.opinionId));
+          }}});
+        if (failedKind === 'detail') await assert.rejects(classifier.classifyAll([opinion({})], [content]));
+        else assert.equal((await classifier.classifyAll([opinion({})], [content])).classifications.length, 1);
+        assert.deepEqual(attempts, {triage: 1, detail: 1});
+      }
+    }
+  }
+});
+
+test('retries interrupted proxy response bodies without treating malformed JSON as a transport failure', async () => {
+  for (const failedKind of ['triage', 'detail'] as const) {
+    const attempts = {triage: 0, detail: 0};
+    const delays: number[] = [];
+    const classifier = new AiClassifier({sleep: async (milliseconds) => {delays.push(milliseconds);},
+      proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+        if (++attempts[body.kind] === 1 && body.kind === failedKind) {
+          return new Response(new ReadableStream({start(controller) {controller.error(new TypeError('Failed to fetch'));}}));
+        }
+        return proxyResponse(body.kind, body.batch.map((item) => item.opinionId));
+      }}});
+    assert.equal((await classifier.classifyAll([opinion({})], [content])).classifications.length, 1);
+    assert.deepEqual(attempts, failedKind === 'triage' ? {triage: 2, detail: 1} : {triage: 1, detail: 2});
+    assert.deepEqual(delays, [1_000]);
+  }
+  for (const malformedKind of ['triage', 'detail'] as const) {
+    const batches: Array<{kind: string; ids: string[]}> = [];
+    const classifier = new AiClassifier({concurrency: 1, sleep: async () => {assert.fail('Malformed JSON must not trigger a transport retry');},
+      proxy: {baseUrl: 'https://example.com/api', request: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as {kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>};
+        const ids = body.batch.map((item) => item.opinionId);
+        batches.push({kind: body.kind, ids});
+        if (body.kind === malformedKind && ids.length > 1) return new Response('{invalid-json');
+        return proxyResponse(body.kind, ids);
+      }}});
+    const output = await classifier.classifyAll(['one', 'two'].map((id) => opinion({id})), [content]);
+    assert.equal(output.classifications.length, 2);
+    assert.deepEqual(batches, malformedKind === 'triage'
+      ? [{kind: 'triage', ids: ['one', 'two']}, {kind: 'detail', ids: ['one', 'two']}]
+      : [{kind: 'triage', ids: ['one', 'two']}, {kind: 'detail', ids: ['one', 'two']},
+        {kind: 'detail', ids: ['one']}, {kind: 'detail', ids: ['two']}]);
+  }
+});
+
+test('retries a real Node proxy response interrupted after its headers arrive', {timeout: 5_000}, async (t) => {
+  const attempts = {triage: 0, detail: 0};
+  const delays: number[] = [];
+  const decodingErrors: unknown[] = [];
+  let truncatedResponse: ServerResponse | undefined;
+  const server = createServer(async (request, response) => {
+    const parts: Buffer[] = [];
+    for await (const part of request) parts.push(Buffer.from(part));
+    const body = JSON.parse(Buffer.concat(parts).toString('utf8')) as {
+      kind: 'triage' | 'detail'; batch: Array<{opinionId: string}>
+    };
+    const firstDetail = ++attempts[body.kind] === 1 && body.kind === 'detail';
+    const payload = await proxyResponse(body.kind, body.batch.map((item) => item.opinionId)).text();
+    response.writeHead(200, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload)});
+    if (firstDetail) {
+      truncatedResponse = response;
+      response.write(payload.slice(0, 30));
+    } else response.end(payload);
+  });
+  await new Promise<void>((resolve) => {server.listen(0, '127.0.0.1', resolve);});
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => {if (error) reject(error); else resolve();});
+    server.closeAllConnections();
+  }));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const classifier = new AiClassifier({concurrency: 1, sleep: async (milliseconds) => {delays.push(milliseconds);},
+    proxy: {baseUrl: `http://127.0.0.1:${address.port}/api`, request: async (input, init) => {
+      const response = await fetch(input, init);
+      if (truncatedResponse) {
+        const interrupted = truncatedResponse;
+        truncatedResponse = undefined;
+        const decode = response.json.bind(response);
+        response.json = async () => {
+          try {return await decode();}
+          catch (error) {decodingErrors.push(error); throw error;}
+        };
+        // Destroy only after fetch has returned headers, so the failure occurs in response.json.
+        interrupted.destroy();
+      }
+      return response;
+    }}});
+  const output = await classifier.classifyAll([opinion({})], [content]);
+  assert.equal(decodingErrors.length, 1);
+  const error = decodingErrors[0] as TypeError & {cause?: {code?: string}};
+  assert.ok(error instanceof TypeError);
+  assert.equal(error.message, 'terminated');
+  assert.equal(error.cause?.code, 'UND_ERR_SOCKET');
+  assert.deepEqual(attempts, {triage: 1, detail: 2});
+  assert.deepEqual(delays, [1_000]);
+  assert.equal(output.classifications[0].reportEligible, true);
 });
 
 test('quota exhaustion is not retried as a rate limit', async () => {

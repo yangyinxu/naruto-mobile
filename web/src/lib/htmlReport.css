@@ -1,0 +1,37 @@
+.html-report-note { flex-direction: column; gap: 5px; color: var(--muted); font-size: 13px; }
+.html-report-note strong { color: var(--ink); font-size: 16px; }
+.html-report-note small { font-size: 11px; overflow-wrap: anywhere; }
+.html-report-noscript { color: var(--muted); line-height: 1.7; }
+.html-report .html-print-button { display: none; }
+.html-report-interactive .html-print-button { display: inline-flex; }
+.html-report [hidden] { display: none !important; }
+.html-report .topic-detail-header, .html-report .evidence-item { overflow-wrap: anywhere; }
+.html-report .evidence-item blockquote { white-space: pre-wrap; }
+.html-report .report-quality details ul { display: block; }
+.html-report .evidence-heading div { flex-wrap: wrap; }
+html:not(.html-report-interactive) .html-report .report-topic-nav,
+html:not(.html-report-interactive) .html-report .sentiment-tabs { display: none; }
+html:not(.html-report-interactive) .html-report .report-workspace { grid-template-columns: minmax(0, 1fr) 285px; }
+html:not(.html-report-interactive) .html-report .evidence-list { min-height: 0; }
+
+@media (max-width: 760px) {
+  .html-report .report-toolbar { flex-wrap: wrap; }
+  .html-report .report-overview > div { padding: 18px 14px; }
+}
+
+@media print {
+  @page { margin: 14mm; }
+  .html-report { background: white; min-width: 0; }
+  .html-report .report-page { padding: 0; }
+  .html-report .report-toolbar, .html-report .report-topic-nav,
+  .html-report .sentiment-tabs, .html-report-noscript { display: none !important; }
+  .html-report .report-dossier.content-width { width: 100%; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
+  .html-report .report-hero { padding: 0 0 20px; grid-template-columns: 1fr; gap: 18px; }
+  .html-report .report-workspace, .html-report .report-quality { display: block !important; }
+  .html-report [data-report-topic], .html-report [data-evidence-panel] { display: block !important; }
+  .html-report .evidence-list { min-height: 0; }
+  .html-report .evidence-heading, .html-report .topic-detail-header { break-after: avoid; }
+  .html-report .evidence-item { break-inside: avoid; }
+  .html-report .report-quality { border: 0; }
+  .html-report .report-quality details ul { display: block; }
+}

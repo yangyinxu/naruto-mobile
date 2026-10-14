@@ -42,6 +42,7 @@ export const NewResearch = ({
   onConnectChrome,
   onDisconnectChrome
 }: Props) => {
+  const browserRuntime = settings.runtime === 'browser';
   const [durationMinutes, setDuration] = useState(settings.defaults.durationMinutes);
   const [contentWindowDays, setWindow] = useState(settings.defaults.contentWindowDays);
   const [keywords, setKeywords] = useState(settings.defaults.keywords.map((keyword) => {
@@ -75,7 +76,16 @@ export const NewResearch = ({
   const chromeReady = chromeStatus?.state === 'connected'
     && chromeStatus.connected
     && chromeStatus.loginState === 'logged_in';
-  const chromeActionLabel = !chromeStatus?.remoteDebuggingEnabled
+  // A valid account stays signed in when the server's AI service is unavailable.
+  const analysisUnavailable = settings.analysis?.transport === 'proxy' && Boolean(settings.analysis.account)
+    && !settings.analysis.loginRequired && !settings.analysis.aiConfigured;
+  const analysisRequirement = settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥'
+    : analysisUnavailable ? 'AI 分析服务暂不可用' : '需要登录 Archtree';
+  const liveCollectionDescription = browserRuntime
+    ? '采集在独立的新 Chrome 窗口中运行，默认使用 4 个标签页，不切换你原窗口的页面。'
+    : '在已连接的 Chrome 中同时读取多个来源，默认使用 4 个标签页。';
+  const chromeActionLabel = browserRuntime ? '连接扩展并检查 B站'
+    : !chromeStatus?.remoteDebuggingEnabled
     ? '开启并连接 Chrome'
     : chromeStatus.connected && chromeStatus.loginState !== 'logged_in'
       ? '重新检查 B站登录'
@@ -153,11 +163,11 @@ export const NewResearch = ({
         <div className="privacy-note">
           <Check size={18}/>
           <div className="privacy-note-content">
-            <span>原始采集数据写入你的电脑：<strong>{settings.dataRoot}</strong></span>
-            <button className="data-location-button" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
+            <span>原始采集数据保存在本机：<strong>{settings.dataRoot}</strong></span>
+            {!browserRuntime && <button className="data-location-button" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
               <FolderOpen size={16}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
-            </button>
-            <small>真实模式会把不含用户名、UID和主页的评论语境经由私人服务器发送给 OpenAI；更改位置不会移动原文件。</small>
+            </button>}
+            <small>{browserRuntime ? '调查、原文、缓存和报告保存在当前浏览器。请导出 ZIP 备份；清除网站数据会删除本地调查。采集和分析期间请保持此网页打开。' : '真实模式会把不含用户名、UID和主页的评论语境经由私人服务器发送给 OpenAI；更改位置不会移动原文件。'}</small>
           </div>
         </div>
       </section>
@@ -211,14 +221,14 @@ export const NewResearch = ({
           <small>选择调查运行模式</small>
         </div>
         <div className="advanced-panel">
-          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥' : '需要登录 Archtree'}`}</small></span></label>
+          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${analysisRequirement}`}</small></span></label>
           <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span></label>
         </div>
         <label className={`parallel-windows ${mode === 'demo' ? 'disabled' : ''}`}>
           <span className="parallel-windows-icon"><Gauge size={20}/></span>
           <span className="parallel-windows-copy">
             <strong>并行调查标签页</strong>
-            <small>{mode === 'live' ? '在已连接的 Chrome 中同时读取多个来源，默认使用 4 个标签页。' : '演示模式不打开 Chrome 标签页。'}</small>
+            <small>{mode === 'live' ? liveCollectionDescription : '演示模式不打开 Chrome 标签页。'}</small>
           </span>
           <select
             aria-label="并行调查标签页数"
@@ -247,13 +257,13 @@ export const NewResearch = ({
             <div className="analysis-activation-copy">
               <strong id="analysis-activation-title">登录 Archtree 后使用 AI 分析</strong>
               <small>使用任意普通 Archtree 账号即可。密码不会保存，OpenAI 密钥也不会进入这台电脑或 EXE。</small>
-              <div className="analysis-activation-controls">
+              {browserRuntime ? <div className="analysis-activation-controls"><a className="secondary-action" href="/auth/login-web?returnTo=%2Fnaruto%2F">前往 Archtree 登录</a></div> : <div className="analysis-activation-controls">
                 <input aria-label="Archtree 邮箱或用户名" autoComplete="username" value={archtreeIdentifier} onChange={(event) => setArchtreeIdentifier(event.target.value)} placeholder="邮箱或用户名"/>
                 <input aria-label="Archtree 密码" type="password" autoComplete="current-password" value={archtreePassword} onChange={(event) => setArchtreePassword(event.target.value)} placeholder="密码"/>
                 <button type="button" disabled={authenticating || !archtreeIdentifier.trim() || !archtreePassword} onClick={() => void loginAnalysis()}>
                   {authenticating ? <LoaderCircle className="spin" size={17}/> : <KeyRound size={17}/>} {authenticating ? '正在登录…' : '登录'}
                 </button>
-              </div>
+              </div>}
               {authenticationError && <p role="alert">{authenticationError}</p>}
             </div>
           </section>
@@ -265,6 +275,7 @@ export const NewResearch = ({
             <div className="analysis-activation-copy">
               <strong>已登录 Archtree</strong>
               <small>{settings.analysis.account.email} · 登录有效</small>
+              {analysisUnavailable && <p role="status">AI 分析服务暂不可用，请稍后重试。</p>}
               <button className="analysis-logout-button" type="button" disabled={authenticating} onClick={() => void logoutAnalysis()}>
                 {authenticating ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} {authenticating ? '正在退出…' : '退出或更换账号'}
               </button>
@@ -277,10 +288,11 @@ export const NewResearch = ({
           <div className="chrome-connect-heading">
             <span>{chromeReady ? <CircleCheck size={21}/> : <MonitorCog size={21}/>}</span>
             <div>
-              <strong id="chrome-connect-title">{chromeReady ? '已连接你的 B站账号' : '连接已经登录 B站的 Chrome'}</strong>
+              <strong id="chrome-connect-title">{chromeReady ? '已连接你的 B站账号' : browserRuntime ? '连接 B站采集扩展' : '连接已经登录 B站的 Chrome'}</strong>
               <small>{chromeReady
                 ? `${chromeStatus?.accountName ?? '当前账号'}${chromeStatus?.accountUidSuffix ? ` · UID 尾号 ${chromeStatus.accountUidSuffix}` : ''}`
-                : '无需填写端口、账号或 Cookie，工具会自动发现当前电脑上的 Chrome。'}</small>
+                : browserRuntime ? '在同一个 Chrome 中启用扩展并登录 B站，连接后即可开始采集。'
+                  : '无需填写端口、账号或 Cookie，工具会自动发现当前电脑上的 Chrome。'}</small>
             </div>
           </div>
           <p className={`chrome-connect-status ${chromeStatus?.state === 'error' || chromeStatus?.loginState === 'logged_out' ? 'warning' : ''}`}>
@@ -294,11 +306,11 @@ export const NewResearch = ({
             <button className="chrome-guide-link" type="button" onClick={onOpenGuide}><BookOpen size={17}/>图文教程</button>
             {chromeStatus?.connected && <button className="chrome-guide-link" type="button" disabled={chromeTransitioning || (chromeStatus.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={17}/>断开</button>}
           </div>
-          <p>工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。</p>
+          <p>{browserRuntime ? '扩展只采集 B站公开可见内容，并只关闭自己创建的调查标签页；原始数据不上传。' : '工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。'}</p>
         </section>
 
         <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || Boolean(keywordError) || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
-          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
+          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : analysisUnavailable ? 'AI 分析服务暂不可用' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
         </button>
         <p className="compliance-copy">只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>
       </form>

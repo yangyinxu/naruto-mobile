@@ -1,0 +1,153 @@
+import {describe, expect, it, vi} from 'vitest';
+import {ReportData, ReportEvidence, ReportSentiment, ReportTopic} from '../types';
+import {buildHtmlReport} from './htmlReport';
+import {downloadReportFile, reportFilename} from './downloadReport';
+
+const evidence = (sentiment: ReportSentiment, text: string): ReportEvidence => ({
+  id: text, sentiment, text, evidence: text, claim: `提炼 ${text}`, severity: 3, confidence: .9,
+  likes: 12, replies: 2, authorName: '玩家 <甲>', sourceTitle: '来源 & 标题',
+  sourceUrl: 'https://example.com/source?a=1&b=2'
+});
+
+const topic = (name: string): ReportTopic => ({
+  topic: name, summary: `${name}的总结`, count: 4, positive: 1, mixed: 1, negative: 1, neutral: 1,
+  sources: 3, authors: 4, averageSeverity: 3, riskScore: 8, netSentiment: 0, reviewStatus: '可以复核',
+  evidence: {
+    positive: [evidence('positive', `${name}正向原文`)],
+    mixed: [evidence('mixed', `${name}混合原文`)],
+    negative: [evidence('negative', `${name}负向原文`)],
+    neutral: [evidence('neutral', `${name}中性原文`)]
+  }
+});
+
+const report: ReportData = {
+  title: '火影调查', runId: 'report-test', generatedAt: '2026-10-11T12:00:00.000Z',
+  conclusion: '样本需要人工复核。', topics: [topic('忍者设计'), topic('商业化')],
+  sample: {sourceCount: 3, rawOpinions: 40, validOpinions: 8, topicCount: 2, warnings: 0,
+    confidenceLabel: '可以复核', confidenceExplanation: '三个独立来源。'},
+  quality: {analysisMode: 'ai', analysisLabel: 'Luna 分析', strongOpinions: 8, weakOpinions: 2,
+    noiseOpinions: 4, duplicateOpinions: 1, localHardNoise: 2, creatorViewsExcluded: 1,
+    cachedAiOpinions: 0, detailedAiOpinions: 14, usageExplanation: '实际 API usage。',
+    usage: {requestCount: 2, inputTokens: 2200, cachedInputTokens: 600, outputTokens: 500,
+      reasoningTokens: 150, totalTokens: 2700, estimatedCostUsd: .01,
+      stages: {triage: {requestCount: 1, inputTokens: 1000, estimatedCostUsd: .002},
+        detail: {requestCount: 1, inputTokens: 1200, estimatedCostUsd: .008}}}},
+  limitations: ['热门优先样本不代表全部玩家。']
+};
+
+const parse = (data = report, title = data.title) => {
+  const html = buildHtmlReport(title, data);
+  return new DOMParser().parseFromString(html, 'text/html');
+};
+
+// Run the exact embedded script against an isolated document, with no app/API.
+const initialize = (doc: Document) => {
+  const print = vi.fn();
+  new Function('document', 'window', doc.querySelector('script')!.textContent!)(doc, {
+    print, matchMedia: () => ({matches: false})
+  });
+  return {print};
+};
+
+describe('single-file HTML reports', () => {
+  it('includes every topic and sentiment, quality, costs and limitations without external assets', () => {
+    const doc = parse();
+    expect(doc.documentElement.lang).toBe('zh-CN');
+    expect(doc.querySelector('meta[charset]')?.getAttribute('charset')).toBe('utf-8');
+    expect(doc.querySelector('style')!.textContent).toContain('@media print');
+    expect(doc.querySelector('script')!.textContent).toContain('selectTopic');
+    expect(doc.querySelectorAll('script[src], link, img, iframe')).toHaveLength(0);
+    expect(doc.querySelectorAll('[data-report-topic]')).toHaveLength(2);
+    expect(doc.querySelectorAll('.evidence-item')).toHaveLength(8);
+    expect(doc.querySelector('[hidden]')).toBeNull(); // Readable with JS disabled.
+    for (const item of report.topics) {
+      for (const records of Object.values(item.evidence)) {
+        for (const record of records) expect(doc.body.textContent).toContain(record.text);
+      }
+    }
+    expect(doc.body.textContent).toContain('Decisions 初筛');
+    expect(doc.body.textContent).toContain('Luna 详析');
+    expect(doc.body.textContent).toContain('2,700 Token');
+    expect(doc.body.textContent).toContain('热门优先样本不代表全部玩家。');
+    expect(doc.querySelector('details')!.open).toBe(true);
+    expect(doc.querySelector('.evidence-item a')?.getAttribute('href')).toBe('https://example.com/source?a=1&b=2');
+  });
+
+  it('switches topics and sentiment offline, including neutral and print action', () => {
+    const doc = parse();
+    const {print} = initialize(doc);
+    const topics = Array.from(doc.querySelectorAll<HTMLElement>('[data-report-topic]'));
+    expect(topics.map((item) => item.hidden)).toEqual([false, true]);
+    expect(topics[0].querySelector<HTMLElement>('[data-evidence-panel="negative"]')!.hidden).toBe(false);
+    doc.querySelector<HTMLButtonElement>('[data-report-topic-link="1"]')!.click();
+    expect(topics.map((item) => item.hidden)).toEqual([true, false]);
+    expect(doc.querySelector('[data-report-topic-link="1"]')!.getAttribute('aria-current')).toBe('true');
+    const neutral = topics[1].querySelector<HTMLButtonElement>('[data-report-sentiment="neutral"]')!;
+    neutral.click();
+    expect(neutral.getAttribute('aria-selected')).toBe('true');
+    expect(topics[1].querySelector<HTMLElement>('[data-evidence-panel="neutral"]')!.hidden).toBe(false);
+    expect(topics[1].querySelector<HTMLElement>('[data-evidence-panel="negative"]')!.hidden).toBe(true);
+    doc.querySelector<HTMLButtonElement>('[data-print-report]')!.click();
+    expect(print).toHaveBeenCalledOnce();
+    // All records stay in the DOM for print CSS to reveal, even after filtering.
+    expect(doc.querySelectorAll('.evidence-item')).toHaveLength(8);
+  });
+
+  it('selects available evidence when negative is empty and supports empty or older reports', () => {
+    const positiveOnly = topic('只含正向');
+    positiveOnly.negative = 0;
+    positiveOnly.evidence.negative = [];
+    const doc = parse({...report, topics: [positiveOnly]});
+    initialize(doc);
+    expect(doc.querySelector('[data-report-sentiment="positive"]')!.getAttribute('aria-selected')).toBe('true');
+    const legacy = parse({...report, topics: [], quality: {...report.quality, usage: undefined}});
+    expect(() => initialize(legacy)).not.toThrow();
+    expect(legacy.body.textContent).toContain('本次没有可展示的主题详情。');
+    expect(legacy.body.textContent).toContain('旧版报告没有保存 API usage');
+    const demo = parse({...report, quality: {...report.quality, analysisMode: 'rule_demo', usage: undefined}});
+    expect(demo.body.textContent).toContain('演示模式未调用');
+    expect(demo.body.textContent).toContain('$0.00');
+  });
+
+  it('escapes report text and does not turn unsafe source URLs into clickable links', () => {
+    const attack = '</script><script>window.injected = true</script><img src=x onerror=alert(1)>';
+    const hostileTopic = topic(attack);
+    hostileTopic.evidence.negative[0].text = attack;
+    hostileTopic.evidence.negative[0].sourceUrl = 'javascript:alert(1)';
+    const doc = parse({...report, conclusion: attack, topics: [hostileTopic]}, attack);
+    expect(doc.querySelectorAll('script')).toHaveLength(1);
+    expect(doc.querySelectorAll('img, [onerror], a[href^="javascript:"]')).toHaveLength(0);
+    expect(doc.querySelector('h1')!.textContent).toBe(attack);
+    expect(doc.querySelector('[data-evidence-panel="negative"] blockquote')!.textContent).toBe(attack);
+    initialize(doc);
+    expect(doc.querySelector('[data-report-topic]')!.hasAttribute('hidden')).toBe(false);
+  });
+});
+
+describe('report downloads', () => {
+  it('uses a portable filename and keeps the download URL alive until the save dialog can read it', () => {
+    expect(reportFilename('调查/报告: 2026? ', 'html')).toBe('调查-报告- 2026-.html');
+    expect(reportFilename('   ', 'md')).toBe('调查报告.md');
+    vi.useFakeTimers();
+    const create = vi.fn((_blob: Blob) => 'blob:test-report');
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', {createObjectURL: create, revokeObjectURL: revoke});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.isConnected).toBe(true);
+      expect(this.download).toBe('调查报告.html');
+    });
+    try {
+      downloadReportFile('<!doctype html>', '调查报告', 'html');
+      expect(click).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0][0].type).toBe('text/html;charset=utf-8');
+      expect(revoke).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
+      expect(revoke).toHaveBeenCalledWith('blob:test-report');
+      expect(document.querySelector('a[download]')).toBeNull();
+    } finally {
+      click.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+});

@@ -1,0 +1,235 @@
+import {normalizeResearchRequest} from '../../../src/domain/validation';
+import {runStates} from '../../../src/domain/types';
+import type {AiClassificationCacheRecord, AiTokenUsage, CandidateContent, ClassificationRecord, ContentRecord,
+  OpinionRecord, RunCheckpoint, RunEvent, RunManifest} from '../../../src/domain/types';
+
+const fail = (): never => {throw new Error('本机调查数据或扩展消息格式不正确。');};
+const maxRecords = 200_000;
+export const runIdPattern = /^\d{8}T\d{6}-[a-f0-9]{8}$/;
+
+/** Untrusted JSON must be bounded and cannot carry prototype-changing keys. */
+export function validateTree(value: unknown, depth = 0): void {
+  if (depth > 20) fail();
+  if (typeof value === 'number' && !Number.isFinite(value)) fail();
+  if (typeof value === 'string' && value.length > 1024 * 1024) fail();
+  if (Array.isArray(value)) {
+    if (value.length > maxRecords) fail();
+    for (const item of value) validateTree(item, depth + 1);
+  } else if (value && typeof value === 'object') {
+    if (Object.keys(value).length > 500) fail();
+    for (const [key, item] of Object.entries(value)) {
+      if (['__proto__', 'constructor', 'prototype'].includes(key)) fail();
+      validateTree(item, depth + 1);
+    }
+  } else if (!['string', 'number', 'boolean', 'undefined'].includes(typeof value) && value !== null) fail();
+}
+
+export const object = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
+  return value as Record<string, unknown>;
+};
+export const text = (value: unknown, max = 200_000): string => {
+  if (typeof value !== 'string' || value.length > max || /[\u0000]/.test(value)) return fail();
+  return value;
+};
+export const number = (value: unknown, max = Number.MAX_SAFE_INTEGER, min = 0): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) return fail();
+  return value;
+};
+const integer = (value: unknown, max = Number.MAX_SAFE_INTEGER): number => {
+  const result = number(value, max); if (!Number.isSafeInteger(result)) fail(); return result;
+};
+const boolean = (value: unknown): boolean => typeof value === 'boolean' ? value : fail();
+const enumeration = <const T extends string>(value: unknown, allowed: readonly T[]): T =>
+  typeof value === 'string' && allowed.includes(value as T) ? value as T : fail();
+const date = (value: unknown): string => {
+  const result = text(value, 100); if (!Number.isFinite(Date.parse(result))) fail(); return result;
+};
+const id = (value: unknown): string => {
+  const result = text(value, 256); if (!result || /[\u0000-\u0020\\/]/.test(result)) fail(); return result;
+};
+const strings = (value: unknown, maximum = maxRecords, limit = 200_000): string[] => {
+  if (!Array.isArray(value) || value.length > maximum) return fail();
+  return value.map((item) => text(item, limit));
+};
+const optionalText = (source: Record<string, unknown>, keys: string[]): Record<string, string> =>
+  Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, text(source[key])]));
+
+/** Pending collection always targets Bilibili; demo metadata is permitted only for demo runs. */
+export const publicUrl = (value: unknown, demo = false, metadata = false): string => {
+  const result = text(value, 4096);
+  let url: URL;
+  try {url = new URL(result);} catch {return fail();}
+  if (demo && metadata && url.protocol === 'demo:') return result;
+  if (url.protocol !== 'https:' || url.username || url.password || url.port
+    || !(url.hostname === 'bilibili.com' || url.hostname.endsWith('.bilibili.com'))) fail();
+  return result;
+};
+
+export const decodeCandidate = (value: unknown, demo = false): CandidateContent => {
+  const item = object(value);
+  return {id: id(item.id), type: enumeration(item.type, ['video', 'dynamic']), url: publicUrl(item.url),
+    title: text(item.title), discoveryKeyword: text(item.discoveryKeyword, 200), discoveryRank: integer(item.discoveryRank),
+    ...(item.discoveryUrl !== undefined ? {discoveryUrl: publicUrl(item.discoveryUrl, demo, true)} : {}),
+    ...optionalText(item, ['popularityText', 'publishedAt'])};
+};
+
+export const decodeContent = (value: unknown, runId: string, demo = false): ContentRecord => {
+  const item = object(value), metrics = object(item.metrics);
+  return {...decodeCandidate(item, demo), recordSchemaVersion: 2, runId,
+    description: text(item.description), collectedAt: date(item.collectedAt),
+    ...(item.resolvedUrl !== undefined ? {resolvedUrl: publicUrl(item.resolvedUrl)} : {}),
+    metrics: Object.fromEntries(['views', 'likes', 'comments', 'danmaku'].filter((key) => metrics[key] !== undefined)
+      .map((key) => [key, number(metrics[key])]))};
+};
+
+export const decodeOpinion = (value: unknown, runId: string, demo = false): OpinionRecord => {
+  const item = object(value);
+  return {recordSchemaVersion: 2, runId, id: id(item.id), contentId: id(item.contentId),
+    contentType: enumeration(item.contentType, ['video', 'dynamic']),
+    sourceType: enumeration(item.sourceType, ['comment', 'reply', 'danmaku', 'creator_view']),
+    voiceType: enumeration(item.voiceType, ['viewer', 'creator']), text: text(item.text), collectedAt: date(item.collectedAt),
+    likes: number(item.likes), replies: number(item.replies), sourceUrl: publicUrl(item.sourceUrl),
+    ...optionalText(item, ['normalizedText', 'publishedAt', 'publishedAtText', 'authorUid', 'authorName', 'authorHash',
+      'sourceRecordId', 'parentSourceRecordId']),
+    ...(item.sourcePageUrl !== undefined ? {sourcePageUrl: publicUrl(item.sourcePageUrl)} : {}),
+    ...(item.authorProfileUrl !== undefined ? {authorProfileUrl: publicUrl(item.authorProfileUrl, demo, true)} : {})};
+};
+
+export const decodeCheckpoint = (value: unknown, demo = false): RunCheckpoint => {
+  const item = object(value);
+  if (item.schemaVersion !== 1 || !Array.isArray(item.pendingCandidates) || item.pendingCandidates.length > maxRecords) fail();
+  return {schemaVersion: 1, pendingCandidates: (item.pendingCandidates as unknown[]).map((entry) => decodeCandidate(entry, demo)),
+    seenContentIds: strings(item.seenContentIds).map(id), seenOpinionIds: strings(item.seenOpinionIds).map(id),
+    activeElapsedMs: number(item.activeElapsedMs), updatedAt: date(item.updatedAt)};
+};
+
+export const decodeEvent = (value: unknown): RunEvent => {
+  const item = object(value);
+  return {timestamp: date(item.timestamp), level: enumeration(item.level, ['info', 'warning', 'error']),
+    type: text(item.type, 200), message: text(item.message, 10_000)};
+};
+
+export const decodeClassification = (value: unknown): ClassificationRecord => {
+  const item = object(value), topics = strings(item.topics, 100, 200), sentiments = object(item.topicSentiments);
+  const matchedTerms = object(item.matchedTerms);
+  const result: ClassificationRecord = {
+    opinionId: id(item.opinionId), relevanceScore: number(item.relevanceScore, 1),
+    relevanceLevel: enumeration(item.relevanceLevel, ['high', 'medium', 'low']), isValid: boolean(item.isValid), topics,
+    topicSentiments: Object.fromEntries(topics.map((topic) => [topic, enumeration(sentiments[topic], ['positive', 'negative', 'mixed', 'neutral'])])),
+    emotion: enumeration(item.emotion, ['appreciation', 'frustration', 'mixed', 'neutral']),
+    stance: enumeration(item.stance, ['praise', 'complaint', 'suggestion', 'discussion']),
+    severity: number(item.severity, 5), behaviorIntents: strings(item.behaviorIntents, 100, 500), playerSegment: text(item.playerSegment, 500),
+    actionability: enumeration(item.actionability, ['high', 'medium', 'low']), confidence: number(item.confidence, 1),
+    classifierVersion: text(item.classifierVersion, 500), matchedTerms: Object.fromEntries(Object.entries(matchedTerms)
+      .map(([key, terms]) => [key, strings(terms, 100)])), ...optionalText(item, ['invalidReason', 'claimObject', 'claim', 'model'])
+  };
+  if (item.analysisMode !== undefined) result.analysisMode = enumeration(item.analysisMode, ['ai', 'rule_demo']);
+  if (item.insightValue !== undefined) result.insightValue = enumeration(item.insightValue, ['strong', 'weak', 'none']);
+  if (item.informationType !== undefined) result.informationType = enumeration(item.informationType,
+    ['product_feedback', 'gameplay_advice', 'factual_info', 'community_chatter', 'lore_discussion', 'content_request']);
+  if (item.reasoningEffort !== undefined) result.reasoningEffort = enumeration(item.reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+  if (item.specificitySignals !== undefined) result.specificitySignals = strings(item.specificitySignals, 100).map((entry) =>
+    enumeration(entry, ['cause', 'mechanism', 'impact', 'comparison', 'suggestion', 'behavior_with_reason']));
+  for (const key of ['gameRelevant', 'reportEligible', 'needsReview'] as const) if (item[key] !== undefined) result[key] = boolean(item[key]);
+  if (item.reasonCodes !== undefined) result.reasonCodes = strings(item.reasonCodes, 100);
+  if (item.evidence !== undefined) {
+    if (!Array.isArray(item.evidence) || item.evidence.length > 100) fail();
+    result.evidence = (item.evidence as unknown[]).map((entry) => {
+      const evidence = object(entry); return {topic: text(evidence.topic, 200), quote: text(evidence.quote)};
+    });
+  }
+  return result;
+};
+
+export const decodeCache = (value: unknown): AiClassificationCacheRecord => {
+  const item = object(value), classification = decodeClassification(item.classification);
+  if (classification.opinionId !== item.opinionId || !/^[a-f0-9]{64}$/.test(text(item.inputHash, 64))) fail();
+  return {opinionId: id(item.opinionId), inputHash: text(item.inputHash, 64), classification};
+};
+
+/** Manifest account fields and stale request activity are never imported. */
+export const decodeManifest = (value: unknown): RunManifest => {
+  const item = object(value), counts = object(item.counts), request = object(item.request);
+  const runId = text(item.id, 100);
+  if (item.schemaVersion !== 1 || !runIdPattern.test(runId)) fail();
+  const minutes = integer(request.durationMinutes);
+  if (minutes < 1 || minutes > Math.floor(Number.MAX_SAFE_INTEGER / 60_000)) fail();
+  const result: RunManifest = {
+    schemaVersion: 1, id: runId, state: enumeration(item.state, runStates),
+    request: {...normalizeResearchRequest({...request, durationMinutes: Math.min(minutes, 720)}), durationMinutes: minutes},
+    createdAt: date(item.createdAt), updatedAt: date(item.updatedAt), activeElapsedMs: number(item.activeElapsedMs),
+    statusMessage: text(item.statusMessage, 10_000), reportReady: boolean(item.reportReady),
+    counts: {candidates: integer(counts.candidates), contents: integer(counts.contents), opinions: integer(counts.opinions),
+      validOpinions: integer(counts.validOpinions), sources: integer(counts.sources), warnings: integer(counts.warnings)},
+    ...optionalText(item, ['error'])
+  };
+  if (item.stopReason !== undefined) result.stopReason = enumeration(item.stopReason, ['budget_exhausted', 'source_exhausted', 'user_finalized']);
+  if (item.progress !== undefined) {
+    const progress = object(item.progress);
+    result.progress = {phase: enumeration(progress.phase, ['preparing', 'discovering', 'collecting', 'analyzing', 'reporting', 'completed']),
+      ...(progress.completed !== undefined ? {completed: integer(progress.completed)} : {}),
+      ...(progress.total !== undefined ? {total: integer(progress.total)} : {})};
+  }
+  if (item.analysis !== undefined) {
+    const analysis = object(item.analysis);
+    result.analysis = {mode: enumeration(analysis.mode, ['ai', 'rule_demo']), classifierVersion: text(analysis.classifierVersion, 500),
+      completedAt: date(analysis.completedAt), strongOpinions: integer(analysis.strongOpinions), weakOpinions: integer(analysis.weakOpinions),
+      noiseOpinions: integer(analysis.noiseOpinions), ...optionalText(analysis, ['model'])};
+    for (const key of ['localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped', 'detailedAiOpinions', 'processedOpinions',
+      'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions'] as const) {
+      if (analysis[key] !== undefined) result.analysis[key] = integer(analysis[key]);
+    }
+    if (analysis.usage !== undefined) result.analysis.usage = decodeUsage(analysis.usage);
+  }
+  return result;
+};
+
+export const decodeUsage = (value: unknown): AiTokenUsage => {
+  const item = object(value);
+  const result: AiTokenUsage = {
+    requestCount: integer(item.requestCount), inputTokens: integer(item.inputTokens), cachedInputTokens: integer(item.cachedInputTokens),
+    outputTokens: integer(item.outputTokens), reasoningTokens: integer(item.reasoningTokens ?? 0), totalTokens: integer(item.totalTokens),
+    ...(item.cacheWriteInputTokens !== undefined ? {cacheWriteInputTokens: integer(item.cacheWriteInputTokens)} : {}),
+    ...(item.estimatedCostUsd !== undefined ? {estimatedCostUsd: number(item.estimatedCostUsd)} : {}),
+    ...(item.stages !== undefined ? {stages: Object.fromEntries(['triage', 'detail'].map((stage) => {
+      const row = object(object(item.stages)[stage]);
+      return [stage, {requestCount: integer(row.requestCount), inputTokens: integer(row.inputTokens),
+        ...(row.estimatedCostUsd !== undefined ? {estimatedCostUsd: number(row.estimatedCostUsd)} : {})}];
+    })) as {triage: {requestCount: number; inputTokens: number}; detail: {requestCount: number; inputTokens: number}}} : {})
+  };
+  if (item.pricing !== undefined) {
+    const pricing = object(item.pricing);
+    const source = (value: unknown) => {
+      const result = text(value, 4096);
+      const url = new URL(result);
+      if (url.protocol !== 'https:' || url.username || url.password) fail();
+      return result;
+    };
+    result.pricing = {currency: enumeration(pricing.currency, ['USD']), inputPerMillion: number(pricing.inputPerMillion),
+      cachedInputPerMillion: number(pricing.cachedInputPerMillion), outputPerMillion: number(pricing.outputPerMillion),
+      checkedAt: text(pricing.checkedAt, 100), sourceUrl: source(pricing.sourceUrl),
+      ...(pricing.cacheWriteInputPerMillion !== undefined ? {cacheWriteInputPerMillion: number(pricing.cacheWriteInputPerMillion)} : {}),
+      ...(pricing.decisionsInputPerMillion !== undefined ? {decisionsInputPerMillion: number(pricing.decisionsInputPerMillion)} : {}),
+      ...(pricing.decisionsSourceUrl !== undefined ? {decisionsSourceUrl: source(pricing.decisionsSourceUrl)} : {})};
+  }
+  return result;
+};
+
+export const decodeQuality = (value: unknown): Record<string, unknown> => {
+  const item = object(value), result: Record<string, unknown> = {};
+  for (const key of ['rawContents', 'rawOpinions', 'processedOpinions', 'validOpinions', 'strongOpinions', 'weakOpinions', 'noiseOpinions',
+    'validCreatorViews', 'invalidOpinions', 'duplicateOpinions', 'cachedAiOpinions', 'localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped',
+    'detailedAiOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions']) if (item[key] !== undefined) result[key] = integer(item[key]);
+  Object.assign(result, optionalText(item, ['aiModel', 'classifierVersion', 'note', 'reasoningEffort']));
+  if (item.generatedAt !== undefined) result.generatedAt = date(item.generatedAt);
+  if (item.analysisMode !== undefined) result.analysisMode = enumeration(item.analysisMode, ['ai', 'rule_demo']);
+  if (item.aiUsage !== undefined) result.aiUsage = decodeUsage(item.aiUsage);
+  if (item.rejected !== undefined) {
+    if (!Array.isArray(item.rejected) || item.rejected.length > maxRecords) fail();
+    result.rejected = (item.rejected as unknown[]).map((value) => {
+      const rejection = object(value); return {opinionId: id(rejection.opinionId), reason: text(rejection.reason, 500)};
+    });
+  }
+  return result;
+};

@@ -264,6 +264,8 @@ export interface KeywordSettings {
 }
 
 export interface AppSettings {
+  /** Selects browser storage and extension guidance without changing desktop behavior. */
+  runtime?: 'desktop' | 'browser';
   apiVersion?: number;
   dataRoot: string;
   dataRootLocked?: boolean;

@@ -5,6 +5,7 @@ import {
   Clock3,
   FileText,
   FolderOpen,
+  Download,
   MessageSquareText,
   Pause,
   Play,
@@ -135,6 +136,8 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
 
   const errorMessage = run.error === 'The analysis service is temporarily unavailable.'
     ? 'Luna 分析服务暂时不可用。已保存原始数据和分析缓存，请稍后点击“继续分析并生成报告”。'
+    : resumeAnalysis && ['Failed to fetch', 'fetch failed'].includes(run.error ?? '')
+      ? 'Luna 分析时网络连接中断。已保存原始数据和分析缓存，请检查网络后点击“继续分析并生成报告”。'
     : run.error;
 
   return (
@@ -189,7 +192,7 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
       </section>}
 
       <section className="control-panel">
-        <div className="control-copy"><h2>{run.reportReady ? '报告已经准备好' : resumeAnalysis ? '可以继续完成分析' : run.state === 'paused' ? '调查已安全暂停' : '你可以随时控制调查'}</h2><p>{run.reportReady ? '查看网页报告，或打开本地目录获取 Markdown 和 JSONL 文件。' : resumeAnalysis ? '继续使用已收集的意见，复用已保存的分析结果，完成后生成报告。' : '暂停会先完成当前页面并保存检查点；提前生成不会丢掉已有样本。'}</p></div>
+        <div className="control-copy"><h2>{run.reportReady ? '报告已经准备好' : resumeAnalysis ? '可以继续完成分析' : run.state === 'paused' ? '调查已安全暂停' : '你可以随时控制调查'}</h2><p>{run.reportReady ? import.meta.env.MODE === 'hosted' ? '查看报告并导出 HTML 或 Markdown，也可导出调查 ZIP 备份完整记录。' : '查看报告并导出 HTML，浏览器可离线打开；也可导出 Markdown 或打开本地数据目录。' : resumeAnalysis ? '继续使用已收集的意见，复用已保存的分析结果，完成后生成报告。' : '暂停会先完成当前页面并保存检查点；提前生成不会丢掉已有样本。'}</p></div>
         <div className="control-actions">
           {activeStates.has(run.state) && run.state !== 'pause_requested' && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.pause(run.id))}><Pause size={17}/>暂停</button>}
           {canResume && !run.reportReady && <button className="primary-small" disabled={busy || (!resumeAnalysis && remainingMs <= 0)} onClick={() => void action(() => api.resume(run.id))}><Play size={17}/>{resumeAnalysis ? '继续分析并生成报告' : '继续采集'}</button>}
@@ -197,7 +200,9 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
           {!run.reportReady && run.state !== 'processing' && !resumeAnalysis && <button className="danger-action" disabled={busy || run.state === 'pause_requested'} onClick={finalize}><Square size={16}/>终止并生成</button>}
           {run.reportReady && <button className="primary-small" onClick={() => onReport(run)}><FileText size={17}/>查看调查报告</button>}
           {run.reportReady && run.request.mode === 'live' && <button className="secondary-action" disabled={busy} onClick={() => void action(() => api.reanalyze(run.id))}><RefreshCw size={17}/>重新用 Luna 分析</button>}
-          <button className="secondary-action" onClick={() => void api.openFolder(run.id).catch((error) => onError(error.message))}><FolderOpen size={17}/>打开数据文件夹</button>
+          {import.meta.env.MODE === 'hosted'
+            ? <button className="secondary-action" disabled={activeStates.has(run.state)} onClick={() => void api.exportRun(run.id).catch((error) => onError(error.message))}><Download size={17}/>导出调查 ZIP</button>
+            : <button className="secondary-action" onClick={() => void api.openFolder(run.id).catch((error) => onError(error.message))}><FolderOpen size={17}/>打开数据文件夹</button>}
         </div>
       </section>
 

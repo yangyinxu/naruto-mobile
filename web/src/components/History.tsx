@@ -9,6 +9,7 @@ interface Props {
   onBrowse: (run: RunManifest) => void;
   onOpenFolder: (run: RunManifest) => void;
   archiveSupported?: boolean;
+  browserRuntime?: boolean;
   onImport: (file: File) => Promise<RunManifest>;
   onExport: (run: RunManifest) => Promise<void>;
 }
@@ -16,7 +17,7 @@ interface Props {
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const activeStates = new Set(['discovering', 'collecting', 'pause_requested', 'processing']);
 
-export const History = ({runs, archiveSupported = true, onOpen, onBrowse, onOpenFolder, onImport, onExport}: Props) => {
+export const History = ({runs, archiveSupported = true, browserRuntime = false, onOpen, onBrowse, onOpenFolder, onImport, onExport}: Props) => {
   const fileInput = useRef<HTMLInputElement>(null);
   const busyRef = useRef(false);
   const [operation, setOperation] = useState<{kind: 'import' | 'export'; name: string; runId?: string}>();
@@ -98,7 +99,7 @@ export const History = ({runs, archiveSupported = true, onOpen, onBrowse, onOpen
             <div className="run-record-actions">
               <div className="run-record-buttons">
                 <button className="browse-records" onClick={() => onBrowse(run)}><Eye size={17}/>浏览完整记录</button>
-                <button aria-label={`打开 ${run.request.name} 的完整记录文件夹`} title="打开完整记录文件夹" onClick={() => onOpenFolder(run)}><FolderOpen size={17}/></button>
+                {!browserRuntime && <button aria-label={`打开 ${run.request.name} 的完整记录文件夹`} title="打开完整记录文件夹" onClick={() => onOpenFolder(run)}><FolderOpen size={17}/></button>}
                 <button className="export-run" aria-label={`导出 ${run.request.name} 的调查 ZIP`} disabled={!!operation || !archiveSupported || activeStates.has(run.state)} title={activeStates.has(run.state) ? '调查仍在运行，请先暂停采集或等待分析完成。' : '打包原始记录、已有分析和报告为 ZIP'} onClick={() => void exportRun(run)}>{operation?.kind === 'export' && operation.runId === run.id ? <LoaderCircle size={17} className="archive-spinner"/> : <Download size={17}/>}导出调查</button>
               </div>
               {activeStates.has(run.state) && <small className="archive-active-note">采集中请先暂停；分析中请等待完成后导出。</small>}

@@ -41,6 +41,12 @@ const selectFile = (file?: File) => fireEvent.change(screen.getByLabelText('选�
 });
 
 describe('History', () => {
+  it('offers portable ZIP backup for browser data without an unavailable OS folder action', () => {
+    renderHistory({browserRuntime: true});
+    expect(screen.getByRole('button', {name: /导出.*调查 ZIP/})).toBeVisible();
+    expect(screen.getByRole('button', {name: '浏览完整记录'})).toBeVisible();
+    expect(screen.queryByRole('button', {name: /打开.*完整记录文件夹/})).not.toBeInTheDocument();
+  });
   it('offers complete record browsing and folder opening for every run', () => {
     const onBrowse = vi.fn();
     const onOpenFolder = vi.fn();

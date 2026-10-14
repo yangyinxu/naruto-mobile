@@ -87,6 +87,18 @@ describe('RunDetail', () => {
     expect(screen.queryByLabelText('当前步骤仍在进行中')).not.toBeInTheDocument();
   });
 
+  it.each(['Failed to fetch', 'fetch failed'])('explains saved transport failures (%s) and resumes existing analysis', async (error) => {
+    vi.mocked(api.resume).mockClear();
+    render(<RunDetail initial={{...run, state: 'failed_recoverable', stopReason: 'budget_exhausted', error}}
+      onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
+    expect(screen.getByText('Luna 分析时网络连接中断。已保存原始数据和分析缓存，请检查网络后点击“继续分析并生成报告”。')).toBeInTheDocument();
+    expect(screen.queryByText(error)).not.toBeInTheDocument();
+    expect(screen.getByText('分析总处理：544/651 条记录已有最终分类（含缓存与排除项）')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name: '继续分析并生成报告'}));
+    await waitFor(() => expect(api.resume).toHaveBeenCalledOnce());
+    expect(api.resume).toHaveBeenCalledWith(run.id);
+  });
+
   it('recognizes completed collection in older manifests with a stale collecting phase', () => {
     render(<RunDetail initial={{...run, state: 'paused', stopReason: 'budget_exhausted', progress: {phase: 'collecting'}}} onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
     expect(screen.getByText('Luna 分析')).toHaveClass('active');

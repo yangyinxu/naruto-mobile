@@ -1,0 +1,182 @@
+import {Inflate, strToU8, zipSync} from 'fflate';
+import type {BrowserRun} from './types';
+import {decodeCache, decodeCheckpoint, decodeClassification, decodeContent, decodeEvent,
+  decodeManifest, decodeOpinion, decodeQuality, validateTree} from './validation';
+
+const MAX_ARCHIVE = 128 * 1024 * 1024;
+const MAX_EXPANDED = 512 * 1024 * 1024;
+const MAX_JSON = 2 * 1024 * 1024;
+const files = [
+  'manifest.json', 'checkpoint.json', 'events.jsonl', 'raw/contents.jsonl', 'raw/opinions.jsonl',
+  'processed/opinions.jsonl', 'processed/classifications.jsonl', 'processed/ai-classifications.jsonl',
+  'processed/ai-cache.jsonl', 'processed/quality-report.json', 'reports/report.md'
+];
+const requiredReportFiles = ['raw/contents.jsonl', 'raw/opinions.jsonl', 'processed/opinions.jsonl',
+  'processed/classifications.jsonl', 'processed/quality-report.json', 'reports/report.md'];
+const utf8 = new TextDecoder('utf-8', {fatal: true});
+const invalid = (): never => {throw new Error('ZIP 调查压缩包不完整、格式不正确或超过安全限制，请重新导出。');};
+
+const crcTable = Array.from({length: 256}, (_, index) => {
+  let crc = index;
+  for (let bit = 0; bit < 8; bit += 1) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  return crc >>> 0;
+});
+const crc32 = (data: Uint8Array) => {
+  let crc = 0xffffffff;
+  for (const byte of data) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
+/** Read central and local headers before decompression; bound output and verify every CRC. */
+const archiveEntries = (bytes: Uint8Array) => {
+  if (!bytes.length || bytes.length > MAX_ARCHIVE) invalid();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65557); index -= 1) {
+    if (view.getUint32(index, true) === 0x06054b50 && index + 22 + view.getUint16(index + 20, true) === bytes.length) {end = index; break;}
+  }
+  if (end < 0 || view.getUint16(end + 4, true) || view.getUint16(end + 6, true)) invalid();
+  const count = view.getUint16(end + 10, true), centralSize = view.getUint32(end + 12, true);
+  let offset = view.getUint32(end + 16, true);
+  const centralEnd = offset + centralSize;
+  if (!count || count > 64 || view.getUint16(end + 8, true) !== count || centralEnd !== end) invalid();
+  const entries: Array<{name: string; size: number; crc: number; compressed: number; method: number; dataOffset: number}> = [];
+  const names = new Set<string>();
+  let expanded = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (offset + 46 > centralEnd || view.getUint32(offset, true) !== 0x02014b50) invalid();
+    const flags = view.getUint16(offset + 8, true), method = view.getUint16(offset + 10, true);
+    const compressed = view.getUint32(offset + 20, true), size = view.getUint32(offset + 24, true);
+    const nameLength = view.getUint16(offset + 28, true), extraLength = view.getUint16(offset + 30, true), commentLength = view.getUint16(offset + 32, true);
+    const local = view.getUint32(offset + 42, true), mode = view.getUint32(offset + 38, true) >>> 16 & 0xf000;
+    const next = offset + 46 + nameLength + extraLength + commentLength;
+    if (flags & 1 || ![0, 8].includes(method) || next > centralEnd || size > MAX_ARCHIVE
+      || (mode && ![0x8000, 0x4000].includes(mode)) || view.getUint16(offset + 34, true)) invalid();
+    const name = utf8.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+    if (!name || name.length > 400 || /[\u0000-\u001f\\:]/.test(name) || name.startsWith('/')
+      || name.split('/').some((part) => part === '.' || part === '..') || names.has(name.replace(/\/$/, '').toLowerCase())) invalid();
+    names.add(name.replace(/\/$/, '').toLowerCase());
+    expanded += size;
+    if (expanded > MAX_EXPANDED || (name.endsWith('/') && size) || (mode === 0x4000 && !name.endsWith('/'))
+      || (mode === 0x8000 && name.endsWith('/'))) invalid();
+    if (local + 30 > centralEnd || view.getUint32(local, true) !== 0x04034b50
+      || view.getUint16(local + 6, true) !== flags || view.getUint16(local + 8, true) !== method) invalid();
+    const localNameLength = view.getUint16(local + 26, true), localExtraLength = view.getUint16(local + 28, true);
+    if (local + 30 + localNameLength + localExtraLength + compressed > view.getUint32(end + 16, true)
+      || utf8.decode(bytes.subarray(local + 30, local + 30 + localNameLength)) !== name) invalid();
+    if (method === 0 && compressed !== size) invalid();
+    entries.push({name, size, crc: view.getUint32(offset + 16, true), compressed, method,
+      dataOffset: local + 30 + localNameLength + localExtraLength});
+    offset = next;
+  }
+  if (offset !== centralEnd) invalid();
+  const manifests = entries.filter((entry) => /(^|\/)manifest\.json$/.test(entry.name));
+  if (manifests.length !== 1) invalid();
+  const prefix = manifests[0].name.slice(0, -'manifest.json'.length);
+  if (prefix && prefix.split('/').filter(Boolean).length !== 1) invalid();
+  for (const entry of entries) {
+    if (entry.name === prefix && entry.name.endsWith('/')) continue;
+    if (!entry.name.startsWith(prefix)) invalid();
+    const relative = entry.name.slice(prefix.length);
+    if (relative.endsWith('/')) {
+      if (!['raw/', 'processed/', 'reports/'].includes(relative)) invalid();
+    } else if (!files.includes(relative)) invalid();
+  }
+  return {entries, prefix};
+};
+
+const parseJson = (bytes: Uint8Array) => {
+  if (bytes.length > MAX_JSON) invalid();
+  const value: unknown = JSON.parse(utf8.decode(bytes));
+  validateTree(value);
+  return value;
+};
+const parseLines = <T>(bytes: Uint8Array | undefined, decode: (value: unknown) => T): T[] => {
+  if (!bytes) return [];
+  const lines = utf8.decode(bytes).split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length > 200_000) invalid();
+  return lines.map((line) => {
+    if (strToU8(line).length > 1024 * 1024) invalid();
+    const value: unknown = JSON.parse(line);
+    validateTree(value);
+    return decode(value);
+  });
+};
+
+export const createRunId = () => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, '')}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+
+/** Interoperable desktop archive import gives each copy a new identity and never runs network work. */
+export const decodeRunArchive = (bytes: Uint8Array, newId = createRunId()): BrowserRun => {
+  const {entries, prefix} = archiveEntries(bytes);
+  const data: Record<string, Uint8Array> = Object.create(null);
+  for (const entry of entries) {
+    const compressed = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressed);
+    let value: Uint8Array;
+    if (entry.method === 0) value = compressed;
+    else {
+      const chunks: Uint8Array[] = [];
+      let actualSize = 0, finalSeen = false;
+      const decoder = new Inflate((chunk, final) => {
+        actualSize += chunk.length;
+        if (actualSize > entry.size) invalid();
+        chunks.push(chunk); finalSeen = final;
+      });
+      // Small compressed chunks bound transient output even when a malicious header understates its size.
+      for (let index = 0; index < compressed.length; index += 4096) {
+        decoder.push(compressed.subarray(index, index + 4096), index + 4096 >= compressed.length);
+      }
+      if (!compressed.length) decoder.push(compressed, true);
+      if (!finalSeen || actualSize !== entry.size) invalid();
+      value = new Uint8Array(actualSize);
+      let offset = 0;
+      for (const chunk of chunks) {value.set(chunk, offset); offset += chunk.length;}
+    }
+    if (value.length !== entry.size || crc32(value) !== entry.crc) invalid();
+    if (!entry.name.endsWith('/')) data[entry.name.slice(prefix.length)] = value;
+  }
+  const original = decodeManifest(parseJson(data['manifest.json']));
+  if (original.reportReady || ['completed', 'completed_early'].includes(original.state)) {
+    if (!original.reportReady || requiredReportFiles.some((name) => !data[name])) invalid();
+  }
+  const now = new Date().toISOString(), demo = original.request.mode === 'demo';
+  const contents = parseLines(data['raw/contents.jsonl'], (value) => decodeContent(value, newId, demo));
+  const opinions = parseLines(data['raw/opinions.jsonl'], (value) => decodeOpinion(value, newId, demo));
+  const checkpoint = data['checkpoint.json'] ? decodeCheckpoint(parseJson(data['checkpoint.json']), demo) : {
+    schemaVersion: 1 as const, pendingCandidates: [], seenContentIds: [...new Set(contents.map((item) => item.id))],
+    seenOpinionIds: [...new Set(opinions.map((item) => item.id))], activeElapsedMs: original.activeElapsedMs, updatedAt: now
+  };
+  const manifest = {...original, id: newId, importedFrom: {runId: original.id, importedAt: now},
+    ...(['created', 'discovering', 'collecting', 'pause_requested', 'processing'].includes(original.state)
+      ? {state: 'paused' as const, statusMessage: '调查已导入并暂停，可查看数据后手动继续。'} : {})};
+  return {id: newId, manifest, checkpoint, candidates: checkpoint.pendingCandidates, contents, opinions,
+    processedOpinions: parseLines(data['processed/opinions.jsonl'], (value) => decodeOpinion(value, newId, demo)),
+    classifications: parseLines(data['processed/classifications.jsonl'], decodeClassification),
+    aiClassifications: parseLines(data['processed/ai-classifications.jsonl'], decodeClassification),
+    cache: parseLines(data['processed/ai-cache.jsonl'], decodeCache),
+    quality: data['processed/quality-report.json'] ? decodeQuality(parseJson(data['processed/quality-report.json'])) : undefined,
+    report: data['reports/report.md'] ? utf8.decode(data['reports/report.md']) : undefined,
+    events: [...parseLines(data['events.jsonl'], decodeEvent), {timestamp: now, level: 'info', type: 'run_imported',
+      message: '调查已从 ZIP 导入，未自动开始采集或分析。'}]};
+};
+
+/** Preserve the desktop paths and JSONL encoding so Windows can resume browser exports. */
+export const encodeRunArchive = (run: BrowserRun) => {
+  if (!['created', 'paused', 'failed_recoverable', 'completed', 'completed_early'].includes(run.manifest.state)) {
+    throw new Error('调查正在采集或分析，请先暂停或等待完成后再导出。');
+  }
+  const json = (value: unknown) => strToU8(`${JSON.stringify(value, null, 2)}\n`);
+  const lines = (value: unknown[]) => strToU8(value.length ? `${value.map((entry) => JSON.stringify(entry)).join('\n')}\n` : '');
+  const data: Record<string, Uint8Array> = {
+    'manifest.json': json(run.manifest), 'checkpoint.json': json(run.checkpoint), 'events.jsonl': lines(run.events),
+    'raw/contents.jsonl': lines(run.contents), 'raw/opinions.jsonl': lines(run.opinions),
+    'processed/opinions.jsonl': lines(run.processedOpinions), 'processed/classifications.jsonl': lines(run.classifications),
+    'processed/ai-classifications.jsonl': lines(run.aiClassifications), 'processed/ai-cache.jsonl': lines(run.cache)
+  };
+  if (run.quality) data['processed/quality-report.json'] = json(run.quality);
+  if (run.report !== undefined) data['reports/report.md'] = strToU8(run.report);
+  if (Object.values(data).some((value) => value.length > MAX_ARCHIVE)
+    || Object.values(data).reduce((total, value) => total + value.length, 0) > MAX_EXPANDED) invalid();
+  const output = zipSync(Object.fromEntries(Object.entries(data).map(([name, value]) => [`${run.id}/${name}`, value])), {level: 6});
+  if (output.length > MAX_ARCHIVE) invalid();
+  return output;
+};

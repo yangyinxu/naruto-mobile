@@ -76,12 +76,15 @@ const openMainWindow = async (url: string) => {
   });
   const downloadWindow = mainWindow;
   downloadWindow.webContents.session.on('will-download', (_event, item, contents) => {
-    if (contents !== downloadWindow.webContents || !/\.zip$/i.test(item.getFilename())) return;
+    if (contents !== downloadWindow.webContents) return;
+    const extension = item.getFilename().match(/\.(zip|html|md)$/i)?.[1].toLowerCase();
+    if (!extension) return;
+    const format = extension === 'zip' ? '调查压缩包' : extension === 'html' ? 'HTML 报告' : 'Markdown 报告';
     item.setSaveDialogOptions({
-      title: '保存调查压缩包',
+      title: `保存${format}`,
       buttonLabel: '保存',
       defaultPath: join(electronApp.getPath('downloads'), item.getFilename()),
-      filters: [{name: '调查压缩包', extensions: ['zip']}]
+      filters: [{name: format, extensions: [extension]}]
     });
   });
   mainWindow.webContents.on('will-navigate', (event, destination) => {
