@@ -98,6 +98,16 @@ The `isolatedCollectionWindow: 1` handshake is required by the hosted portal
 before starting or resuming live collection, so an older installed extension
 cannot silently run the new workflow in the user's window.
 
+Version `0.1.8` mutes each owned tab while it is still blank, before navigating
+to a login, search, video, or dynamic page. It reapplies tab-level mute on every
+source navigation, so audio remains muted across reused tabs and foreground
+comment retries, including audio outside a video element. Failure to mute a new
+tab stops collection before loading Bilibili and cleans up that tab. Existing
+user tabs keep their current audio settings. Replace the extension files, reload
+the extension, and refresh the portal to activate this fix. This uses the
+existing permissions and Chrome's official
+[Tabs mute API](https://developer.chrome.com/docs/extensions/reference/api/tabs#method-update).
+
 ## Protocol and recovery
 
 Portal requests use `window.postMessage` with the portal's exact origin:

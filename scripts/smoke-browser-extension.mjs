@@ -15,6 +15,7 @@ const publishedAt = new Date(Date.now() - 86_400_000).toISOString();
 let bilibiliRequests = 0;
 let loginBlocked = true;
 const delayedCommentMounts = [];
+const navigationMuteSnapshots = [];
 let context;
 let testWorker;
 try {
@@ -41,6 +42,18 @@ try {
   await context.route('https://*.bilibili.com/**', async (route) => {
     bilibiliRequests += 1;
     const url = new URL(route.request().url());
+    if (route.request().isNavigationRequest() && url.pathname !== '/video/BVOriginal') {
+      // The response is still held here: native muting must precede all page scripts,
+      // including failed login documents and every navigation of a reused tool tab.
+      const tabs = await testWorker.evaluate(async (requestedUrl) => {
+        const saved = await chrome.storage.session.get('ownedTabs');
+        const ownedIds = new Set((saved.ownedTabs || []).map((tab) => tab.id));
+        return (await chrome.tabs.query({})).filter((tab) => ownedIds.has(tab.id)
+          && (tab.pendingUrl === requestedUrl || tab.url === requestedUrl))
+          .map((tab) => ({id: tab.id, muted: tab.mutedInfo?.muted}));
+      }, url.href);
+      navigationMuteSnapshots.push({url: url.href, tabs});
+    }
     if (url.hostname === 'api.bilibili.com' && url.pathname === '/x/web-interface/nav') {
       if (loginBlocked) return route.abort('blockedbyclient');
       await route.fulfill({contentType: 'application/json',
@@ -137,10 +150,43 @@ try {
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', {timeout: 15_000});
   testWorker = worker;
   assert.match(worker.url(), /^chrome-extension:\/\//);
+  await worker.evaluate(() => {
+    globalThis.fixtureExtractionMuteSnapshots = [];
+    const executeScript = chrome.scripting.executeScript.bind(chrome.scripting);
+    chrome.scripting.executeScript = async (options) => {
+      const tab = await chrome.tabs.get(options.target.tabId);
+      fixtureExtractionMuteSnapshots.push({id: tab.id, url: tab.url, active: tab.active,
+        muted: tab.mutedInfo?.muted, world: options.world});
+      return executeScript(options);
+    };
+  });
+  const assertToolTabsMuted = async (complete = false) => {
+    assert.ok(navigationMuteSnapshots.length > 0);
+    for (const snapshot of navigationMuteSnapshots) {
+      assert.equal(snapshot.tabs.length, 1, `Missing owned tab before loading ${snapshot.url}`);
+      assert.equal(snapshot.tabs[0].muted, true, `Tool tab must be muted before loading ${snapshot.url}`);
+    }
+    const extractions = await worker.evaluate(() => fixtureExtractionMuteSnapshots);
+    for (const snapshot of extractions) {
+      assert.equal(snapshot.muted, true, `Tool tab must remain muted when extracting ${snapshot.url}`);
+    }
+    if (complete) {
+      for (const pattern of [/api\.bilibili\.com\/x\/web-interface\/nav/, /search\.bilibili\.com\/video/,
+        /search\.bilibili\.com\/(?:all|dynamic)/, /\/video\/BVFixture[012]/, /\/opus\/1234567890123/]) {
+        assert.ok(navigationMuteSnapshots.some((snapshot) => pattern.test(snapshot.url)), `Missing navigation mute coverage for ${pattern}`);
+        assert.ok(extractions.some((snapshot) => pattern.test(snapshot.url)), `Missing extraction mute coverage for ${pattern}`);
+      }
+      const delayed = extractions.filter((snapshot) => /\/video\/BVFixture1\/?(?:\?|$)/.test(snapshot.url));
+      assert.ok(delayed.some((snapshot) => snapshot.active === false && snapshot.world === 'MAIN'));
+      assert.ok(delayed.some((snapshot) => snapshot.active === true && snapshot.world === 'MAIN'), 'Foreground comment retry must remain natively muted.');
+    }
+    return extractions;
+  };
   const original = await context.newPage();
   await original.goto('https://www.bilibili.com/video/BVOriginal', {waitUntil: 'domcontentloaded'});
   const originalGroup = await worker.evaluate(async () => {
     const tabs = await chrome.tabs.query({url: 'https://www.bilibili.com/video/BVOriginal'});
+    await chrome.tabs.update(tabs[0].id, {muted: true});
     const groupId = await chrome.tabs.group({tabIds: tabs[0].id});
     await chrome.tabGroups.update(groupId, {title: 'Synthetic user group', color: 'blue', collapsed: true});
     return {tabId: tabs[0].id, windowId: tabs[0].windowId, groupId};
@@ -149,7 +195,7 @@ try {
   await portal.goto(portalUrl);
   const mainWindow = await worker.evaluate(async (portalUrl) => {
     const [tab] = await chrome.tabs.query({url: portalUrl});
-    await chrome.tabs.update(tab.id, {active: true});
+    await chrome.tabs.update(tab.id, {active: true, muted: false});
     // Set up the synthetic user's foreground window before observing the collector.
     await chrome.windows.update(tab.windowId, {focused: true});
     globalThis.fixtureWindowEvents = {created: [], focused: [], mainTabChanges: []};
@@ -163,13 +209,17 @@ try {
     return {tabId: tab.id, windowId: tab.windowId};
   }, portalUrl);
   const assertMainWindowPreserved = async () => {
-    const current = await worker.evaluate(async ({windowId}) => ({
+    const current = await worker.evaluate(async ({windowId, tabId, originalTabId}) => ({
       active: (await chrome.tabs.query({active: true, windowId})).map((tab) => tab.id),
       focused: (await chrome.windows.getLastFocused()).id,
+      originalMuted: (await chrome.tabs.get(originalTabId)).mutedInfo?.muted,
+      portalMuted: (await chrome.tabs.get(tabId)).mutedInfo?.muted,
       events: fixtureWindowEvents
-    }), mainWindow);
+    }), {...mainWindow, originalTabId: originalGroup.tabId});
     assert.deepEqual(current.active, [mainWindow.tabId]);
     assert.equal(current.focused, mainWindow.windowId);
+    assert.equal(current.originalMuted, true);
+    assert.equal(current.portalMuted, false);
     assert.deepEqual(current.events.mainTabChanges, []);
     assert.deepEqual(current.events.focused, []);
     assert.ok(current.events.created.every((window) => window.id !== mainWindow.windowId && window.focused === false));
@@ -204,6 +254,7 @@ try {
   assert.equal(blockedStatus.loginState, 'logged_out');
   assert.equal(context.pages().filter((page) => page.url().includes('bilibili.com')).length, 1);
   await assertMainWindowPreserved();
+  await assertToolTabsMuted();
   loginBlocked = false;
   const connected = await call('connect');
   assert.equal(connected.connected, true);
@@ -211,6 +262,7 @@ try {
   assert.equal(connected.accountUidSuffix, '5678');
   assert.equal(Object.keys(connected).includes('mid'), false);
   await assertMainWindowPreserved();
+  await assertToolTabsMuted();
   const runInput = (id) => ({manifest: {id, request: {name: 'Synthetic extension smoke', durationMinutes: 1, contentWindowDays: 30,
     keywords: ['火影手游'], includeVideos: true, includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20}},
     checkpoint: {schemaVersion: 1, pendingCandidates: [], seenContentIds: [], seenOpinionIds: [], activeElapsedMs: 0, updatedAt: new Date().toISOString()}});
@@ -223,7 +275,7 @@ try {
       const tabs = await Promise.all((saved.ownedTabs || []).map((owned) => chrome.tabs.get(owned.id).catch(() => undefined)));
       const present = tabs.filter(Boolean);
       if (present.length !== 4 || present.some((tab) => tab.groupId < 0) || new Set(present.map((tab) => tab.groupId)).size !== 1) return undefined;
-      return {tabs: present.map((tab) => ({id: tab.id, windowId: tab.windowId, groupId: tab.groupId})),
+      return {tabs: present.map((tab) => ({id: tab.id, windowId: tab.windowId, groupId: tab.groupId, muted: tab.mutedInfo?.muted})),
         group: await chrome.tabGroups.get(present[0].groupId)};
     });
     if (liveGroup) break;
@@ -235,6 +287,7 @@ try {
   assert.equal(liveGroup.group.collapsed, false);
   assert.equal(new Set(liveGroup.tabs.map((tab) => tab.windowId)).size, 1);
   assert.equal(liveGroup.tabs.every((tab) => tab.windowId !== mainWindow.windowId && tab.id !== originalGroup.tabId), true);
+  assert.equal(liveGroup.tabs.every((tab) => tab.muted === true), true);
   assert.notEqual(liveGroup.group.id, originalGroup.groupId);
   await assertMainWindowPreserved();
   await portal.waitForFunction((id) => window.fixtureEvents.some((event) => event.runId === id && event.type === 'complete'), firstId, {timeout: 35_000});
@@ -260,6 +313,7 @@ try {
   assert.equal(context.pages().filter((page) => page.url().includes('bilibili.com')).length, 1);
   await assertMainWindowPreserved();
   assert.equal((await worker.evaluate(() => chrome.windows.getAll())).some((window) => window.id === liveGroup.tabs[0].windowId), false);
+  await assertToolTabsMuted(true);
 
   const secondId = '20261013T200001-12345679';
   await call('start', runInput(secondId));
@@ -282,6 +336,8 @@ try {
   assert.equal(preservedGroup.group.color, 'blue');
   assert.equal(preservedGroup.group.collapsed, true);
   await assertMainWindowPreserved();
+  const extractionMuteSnapshots = await assertToolTabsMuted(true);
+  await writeFile(join(output, 'mute-snapshots.json'), `${JSON.stringify({navigation: navigationMuteSnapshots, extraction: extractionMuteSnapshots}, null, 2)}\n`);
   assert.ok((await worker.evaluate(() => fixtureWindowEvents.created)).length >= 5);
 
   const beforeBlocked = bilibiliRequests;
@@ -310,6 +366,7 @@ try {
   const result = {ok: true, browser: context.browser()?.version(), testMode: cdpMode ? 'cdp' : 'chromium', syntheticBilibiliRequests: bilibiliRequests,
     collectedSources: 4, collectedOpinions: 10, dedicatedCollectionWindow: true, mainWindowSelectionPreserved: true, mainWindowFocusPreserved: true,
     confirmedZeroComments: true, groupedToolTabs: true, userGroupPreserved: true, delayedCommentScroll: true, lateContentUrlDecoration: true, foregroundReadRetry: true,
+    mutedBeforePageScripts: true, mutedDuringExtraction: true, foregroundRetryMuted: true, userMuteStatesPreserved: true,
     blockedLoginRecovery: true, pauseResume: true, originalTabPreserved: true, unapprovedPortalRejected: true};
   await writeFile(join(output, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result, null, 2));

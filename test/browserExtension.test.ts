@@ -125,9 +125,9 @@ test('open ShadowRoot fixture preserves Bilibili component public backing fields
 
 const workerBundle = build({entryPoints: [resolve('src/browserExtension/background.ts')], bundle: true, platform: 'browser', format: 'iife', write: false, target: 'chrome120', keepNames: false}).then((value) => value.outputFiles![0].text);
 function chromeFixture() {
-  const tabs = new Map<number, {id: number; url: string; status: string; windowId: number; groupId: number; active?: boolean; pendingUrl?: string}>([
-    [1, {id: 1, url: 'https://www.bilibili.com/video/BVUserTab', status: 'complete', windowId: 1, groupId: 70}],
-    [2, {id: 2, url: 'https://kashewt.com/naruto/', status: 'complete', windowId: 1, groupId: -1, active: true}]]);
+  const tabs = new Map<number, {id: number; url: string; status: string; windowId: number; groupId: number; active?: boolean; pendingUrl?: string; mutedInfo?: {muted: boolean}}>([
+    [1, {id: 1, url: 'https://www.bilibili.com/video/BVUserTab', status: 'complete', windowId: 1, groupId: 70, mutedInfo: {muted: false}}],
+    [2, {id: 2, url: 'https://kashewt.com/naruto/', status: 'complete', windowId: 1, groupId: -1, active: true, mutedInfo: {muted: true}}]]);
   const groups = new Map<number, {windowId: number; title: string; color: string; collapsed: boolean}>([
     [70, {windowId: 1, title: 'User group', color: 'blue', collapsed: true}]]);
   const windows = new Map<number, {id: number; focused: boolean; type: string}>([[1, {id: 1, focused: true, type: 'normal'}]]);
@@ -152,6 +152,10 @@ function chromeFixture() {
   let pendingLookupFailure = false;
   let updateCalls = 0;
   let failUpdateAt = 0;
+  let blankMuteCalls = 0;
+  let failMuteAt = 0;
+  const muteUpdates: Array<{tabId: number; url: string; muted: boolean; navigation: boolean}> = [];
+  const navigations: Array<{tabId: number; url: string; wasMuted: boolean; muted?: boolean}> = [];
   let driftContentUrls: 'same_content' | 'different_content' | 'pending_foreign' | undefined;
   let missingContentResult = false;
   let needsForeground = false;
@@ -195,7 +199,7 @@ function chromeFixture() {
       assert.equal(Object.keys(options).sort().join(','), 'focused,type,url');
       const window = {id: nextWindowId++, focused: options.focused, type: options.type};
       windows.set(window.id, window);
-      const tab = {id: nextId++, url: options.url, status: 'complete', windowId: window.id, groupId: -1, active: true};
+      const tab = {id: nextId++, url: options.url, status: 'complete', windowId: window.id, groupId: -1, active: true, mutedInfo: {muted: false}};
       tabs.set(tab.id, tab);
       windowCreates.push({...options, id: window.id, initialTab: tab.id});
       return {...window, tabs: [{...tab}]};
@@ -229,7 +233,7 @@ function chromeFixture() {
       create: async ({url, windowId, active}: {url: string; windowId: number; active: boolean}) => {
         tabCreates.push({windowId, active});
         if (!windows.has(windowId) || failTabCreate) throw new Error('synthetic tool window unavailable');
-        const tab = {id: nextId++, url, status: 'complete', windowId, groupId: -1, active}; tabs.set(tab.id, tab); return {...tab};
+        const tab = {id: nextId++, url, status: 'complete', windowId, groupId: -1, active, mutedInfo: {muted: false}}; tabs.set(tab.id, tab); return {...tab};
       },
       group: async ({tabIds, groupId, createProperties}: {tabIds: number; groupId?: number; createProperties?: {windowId: number}}) => {
         groupingCalls += 1;
@@ -243,17 +247,28 @@ function chromeFixture() {
         grouped.push({tabId: tabIds, groupId: id, windowId: tab.windowId});
         return id;
       },
-      update: async (id: number, {url, active}: {url?: string; active?: boolean}) => {
+      update: async (id: number, {url, active, muted}: {url?: string; active?: boolean; muted?: boolean}) => {
+        const tab = tabs.get(id)!;
+        const wasMuted = tab.mutedInfo?.muted === true;
+        if (muted !== undefined) {
+          if (url === undefined && active === undefined) {
+            blankMuteCalls += 1;
+            if (blankMuteCalls === failMuteAt) throw new Error('private browser mute diagnostic');
+          }
+          muteUpdates.push({tabId: id, url: tab.url, muted, navigation: url !== undefined});
+          tab.mutedInfo = {muted};
+        }
         if (active) {
           if (activationFails && id !== 2) throw new Error('private activation diagnostic');
-          const tab = tabs.get(id)!;
           for (const value of tabs.values()) if (value.windowId === tab.windowId) value.active = value.id === id;
           activations.push(id);
           for (const callback of activationListeners) callback({tabId: id, windowId: tab.windowId});
           return {...tab};
         }
+        if (url === undefined && muted !== undefined) return {...tab};
         assert.equal(typeof url, 'string');
         assert.notEqual(id, 1);
+        navigations.push({tabId: id, url: url!, wasMuted, muted});
         updateCalls += 1;
         if (updateCalls === failUpdateAt) throw new Error('Tabs cannot be edited right now.');
         updated.push(id);
@@ -324,7 +339,7 @@ function chromeFixture() {
   const port = {name: CHANNEL, sender: {id: 'fixture-extension', frameId: 0, tab: {id: 2, windowId: 1}, url: 'https://kashewt.com/naruto/'},
     postMessage: (value: Record<string, unknown>) => output.push(value), disconnect: () => disconnectListener(),
     onMessage: {addListener: (fn: typeof listener) => {listener = fn;}}, onDisconnect: {addListener: (fn: () => void) => {disconnectListener = fn;}}};
-  return {chrome, tabs, groups, grouped, groupUpdates, updated, removed, output, port, executions, session, activations, contentReads,
+  return {chrome, tabs, groups, grouped, groupUpdates, updated, removed, output, port, executions, session, activations, contentReads, muteUpdates, navigations,
     windows, windowCreates, tabCreates,
     failWindowCreateAt: (call: number) => {failWindowCreateAt = call;}, failTabCreate: () => {failTabCreate = true;},
     closeSearchWindow: () => {closeSearchWindow = true;},
@@ -348,6 +363,7 @@ function chromeFixture() {
     failRemoval: (id?: number) => {failRemovalId = id;},
     failLookupAfterLogin: () => {failLookupAfterLogin = true;},
     failUpdateAt: (call: number) => {failUpdateAt = call;},
+    failMuteAt: (call: number) => {failMuteAt = call;},
     driftContentUrls: (mode: 'same_content' | 'different_content' | 'pending_foreign' = 'same_content') => {driftContentUrls = mode;},
     missingContentResult: () => {missingContentResult = true;},
     holdNavigationWrite: (url: string) => {
@@ -390,6 +406,18 @@ async function loadWorker(fixture: ReturnType<typeof chromeFixture>, clock: {new
     crypto, TextEncoder, btoa, structuredClone, setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms === 12_000 ? 100 : Math.min(ms, 2)), clearTimeout});
   fixture.attach();
 }
+function assertToolTabsMuted(fixture: ReturnType<typeof chromeFixture>) {
+  const blankMutes = fixture.muteUpdates.filter((update) => !update.navigation);
+  assert.equal(blankMutes.length, fixture.windowCreates.length + fixture.tabCreates.length);
+  assert.equal(blankMutes.every((update) => update.url === 'about:blank'), true);
+  assert.equal(new Set(blankMutes.map((update) => update.tabId)).size, blankMutes.length);
+  assert.equal(fixture.windowCreates.every((window) => blankMutes.some((update) => update.tabId === window.initialTab)), true);
+  assert.ok(fixture.navigations.length > 0);
+  assert.equal(fixture.navigations.every((navigation) => navigation.wasMuted && navigation.muted === true), true);
+  assert.equal(fixture.muteUpdates.every((update) => update.muted && ![1, 2, 90].includes(update.tabId)), true);
+  assert.equal(fixture.tabs.get(1)?.mutedInfo?.muted, false);
+  assert.equal(fixture.tabs.get(2)?.mutedInfo?.muted, true);
+}
 
 test('a delayed source retries only inside its new investigation window and preserves portal selection', async () => {
   const fixture = chromeFixture();
@@ -405,6 +433,7 @@ test('a delayed source retries only inside its new investigation window and pres
   assert.equal(fixture.tabs.get(2)?.active, true);
   assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 2);
   assert.equal(fixture.tabs.size, 2);
+  assertToolTabsMuted(fixture);
 });
 
 test('four foreground retries serialize their reads and restore the original active tab', async () => {
@@ -428,6 +457,7 @@ test('four foreground retries serialize their reads and restore the original act
   assert.equal(fixture.activations.includes(2), false);
   assert.equal(fixture.tabs.get(2)?.active, true);
   assert.equal(fixture.output.filter((value) => value.type === 'content').length, 4);
+  assertToolTabsMuted(fixture);
 });
 
 test('foreground recovery respects user selection and never restores over a different active tab', async () => {
@@ -591,8 +621,8 @@ test('a first null login result leaves a valid disconnected status and an explic
   assert.equal(disconnected.loginState, 'logged_out');
   assert.equal(disconnected.commentReadiness, 1);
   assert.equal(disconnected.isolatedCollectionWindow, 1);
-  assert.equal(disconnected.extensionVersion, '0.1.7');
-  assert.match(String(disconnected.message), /0\.1\.7/);
+  assert.equal(disconnected.extensionVersion, '0.1.8');
+  assert.match(String(disconnected.message), /0\.1\.8/);
   assert.equal(disconnected.activeInvestigations, 0);
   assert.equal(disconnected.accountName, undefined);
   assert.equal(fixture.session.connection, undefined);
@@ -606,8 +636,8 @@ test('a first null login result leaves a valid disconnected status and an explic
   assert.equal(retry.loginState, 'logged_in');
   assert.equal(retry.commentReadiness, 1);
   assert.equal(retry.isolatedCollectionWindow, 1);
-  assert.equal(retry.extensionVersion, '0.1.7');
-  assert.match(String(retry.message), /0\.1\.7/);
+  assert.equal(retry.extensionVersion, '0.1.8');
+  assert.match(String(retry.message), /0\.1\.8/);
   assert.equal(retry.accountName, 'Fixture');
   assert.equal(retry.accountUidSuffix, '5678');
   assert.equal(fixture.tabs.size, 2);
@@ -729,6 +759,7 @@ test('mocked MV3 worker completes four collectors and only closes its own tabs',
   assert.deepEqual(fixture.groups.get(70), {windowId: 1, title: 'User group', color: 'blue', collapsed: true});
   assert.equal(fixture.tabs.get(1)?.groupId, 70);
   assert.equal(fixture.tabs.get(2)?.groupId, -1);
+  assertToolTabsMuted(fixture);
 });
 
 test('same-content URL drift after navigation does not cause an extraction failure burst or leak tool tabs', async () => {
@@ -748,6 +779,7 @@ test('same-content URL drift after navigation does not cause an extraction failu
   assert.equal(fixture.tabs.size, 2);
   assert.equal(fixture.tabs.get(1)?.groupId, 70);
   assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+  assertToolTabsMuted(fixture);
 });
 
 test('late navigation to a different source or pending foreign URL remains fenced', async () => {
@@ -806,6 +838,49 @@ test('new window creation failures never create tabs in an existing browser wind
     assert.equal(fixture.tabs.size, 2);
     assert.equal(fixture.windows.size, 1);
     assert.equal(fixture.tabs.get(2)?.active, true);
+  }
+});
+
+test('mute failure stops login or collection before navigating the affected tab and cleans up owned tabs', async () => {
+  for (const call of [1, 2, 3]) {
+    const fixture = chromeFixture();
+    fixture.failMuteAt(call);
+    await loadWorker(fixture);
+    fixture.send('start', input());
+    await until(() => call === 1 ? fixture.output.some((value) => value.id === 'start')
+      : fixture.output.some((value) => value.type === 'complete'));
+    if (call === 1) assert.equal(fixture.output.find((value) => value.id === 'start')!.error, '无法创建火影调查标签组，请检查扩展权限后重试。');
+    else assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'paused');
+    const failedTabId = 9 + call;
+    assert.equal(fixture.navigations.some((navigation) => navigation.tabId === failedTabId), false);
+    assert.equal(fixture.output.some((value) => value.type === 'content'), false);
+    assert.equal(fixture.tabs.size, 2);
+    assert.equal(fixture.windows.size, 1);
+    assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
+    assert.equal(fixture.tabs.get(1)?.mutedInfo?.muted, false);
+    assert.equal(fixture.tabs.get(2)?.mutedInfo?.muted, true);
+    assert.equal(JSON.stringify(fixture.output).includes('private browser mute diagnostic'), false);
+  }
+});
+
+test('a blank tool tab repurposed or regrouped before ownership validation is never muted', async () => {
+  for (const change of ['navigation', 'group'] as const) {
+    const fixture = chromeFixture();
+    await loadWorker(fixture);
+    const write = fixture.holdNavigationWrite('about:blank');
+    fixture.send('connect');
+    await until(write.attempted);
+    const tab = fixture.tabs.get(10)!;
+    if (change === 'navigation') tab.url = 'https://www.bilibili.com/video/BVManual';
+    else tab.groupId = 70;
+    write.release();
+    await until(() => fixture.output.some((value) => value.id === 'connect'));
+    assert.equal(typeof fixture.output.find((value) => value.id === 'connect')!.error, 'string');
+    assert.deepEqual(fixture.muteUpdates, []);
+    assert.deepEqual(fixture.navigations, []);
+    assert.equal(fixture.tabs.get(10)?.mutedInfo?.muted, false);
+    assert.equal(fixture.removed.includes(10), false);
+    assert.equal(JSON.stringify(fixture.session.ownedTabs), '[]');
   }
 });
 
@@ -982,13 +1057,17 @@ test('a user regrouping a tab during a pending navigation checkpoint prevents th
   await until(write.attempted);
   const previousUrl = fixture.tabs.get(11)!.url;
   const previousUpdates = fixture.updated.filter((id) => id === 11).length;
+  const previousMuteUpdates = fixture.muteUpdates.filter((update) => update.tabId === 11).length;
   fixture.tabs.get(11)!.groupId = 70;
+  fixture.tabs.get(11)!.mutedInfo = {muted: false};
   write.release();
   await until(() => fixture.output.some((value) => value.type === 'complete'));
   assert.equal(fixture.tabs.get(11)?.url, previousUrl);
   assert.equal(fixture.updated.filter((id) => id === 11).length, previousUpdates);
   assert.equal(fixture.removed.includes(11), false);
   assert.equal(fixture.tabs.get(11)?.groupId, 70);
+  assert.equal(fixture.muteUpdates.filter((update) => update.tabId === 11).length, previousMuteUpdates);
+  assert.equal(fixture.tabs.get(11)?.mutedInfo?.muted, false);
   const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string; checkpoint: ReturnType<typeof input>['checkpoint']};
   assert.equal(complete.outcome, 'paused');
   assert.equal((complete.checkpoint.pendingCandidates as Array<{id: string}>).some((item) => item.id === 'BVFixture0'), true);
@@ -1103,6 +1182,7 @@ test('comments that are not ready retain only the failed source and resume witho
   assert.equal(fixture.output.filter((value) => value.type === 'content').length, 4);
   assert.equal(fixture.output.filter((value) => value.type === 'opinion').length, 8);
   assert.equal(fixture.tabs.size, 2);
+  assertToolTabsMuted(fixture);
 });
 
 test('a verification-required source stays pending without committing title-only content', async () => {
@@ -1284,6 +1364,7 @@ test('eight parallel collectors, portal departure and login rejection keep local
   assert.equal(fixture.grouped.slice(1).length, 8);
   assert.equal(new Set(fixture.grouped.slice(1).map((item) => item.groupId)).size, 1);
   assert.equal(fixture.groupUpdates.length, 2);
+  assertToolTabsMuted(fixture);
 
   const closed = chromeFixture();
   await loadWorker(closed);
@@ -1363,6 +1444,7 @@ test('collection cannot overwrite a user navigation pending in the old complete 
   assert.equal(complete.outcome, 'paused');
   assert.equal(complete.checkpoint.pendingCandidates.length, 4);
   assert.equal(fixture.updated.filter((id) => id === 11).length, 2);
+  assert.equal(fixture.muteUpdates.filter((update) => update.tabId === 11).length, 3);
   assert.equal(fixture.removed.includes(11), false);
   assert.equal(fixture.tabs.get(11)?.pendingUrl, 'https://www.bilibili.com/video/BVManual');
   assert.equal(fixture.tabs.has(1), true);

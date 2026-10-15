@@ -21,7 +21,7 @@ declare const chrome: {
   tabs: {
     create(options: {url: string; active: boolean; windowId?: number}): Promise<Tab>;
     group(options: {tabIds: number; groupId?: number; createProperties?: {windowId: number}}): Promise<number>;
-    update(id: number, options: {url?: string; active?: boolean}): Promise<Tab>;
+    update(id: number, options: {url?: string; active?: boolean; muted?: boolean}): Promise<Tab>;
     query(options: {active: true; windowId: number}): Promise<Tab[]>;
     onActivated: {addListener(callback: (info: {tabId: number; windowId: number}) => void): void;
       removeListener(callback: (info: {tabId: number; windowId: number}) => void): void};
@@ -172,8 +172,8 @@ async function connectionSummary(value: Account) {
 
 function status() {
   return {state: connected ? 'connected' : 'ready', remoteDebuggingEnabled: false, connected,
-    ...account, extensionVersion: '0.1.7', commentReadiness: 1, isolatedCollectionWindow: 1, activeInvestigations: active ? 1 : 0,
-    message: connected ? '浏览器扩展 0.1.7 已连接，将在当前电脑采集公开意见。' : '浏览器扩展 0.1.7 已就绪，请登录 B站后点击连接浏览器扩展。'};
+    ...account, extensionVersion: '0.1.8', commentReadiness: 1, isolatedCollectionWindow: 1, activeInvestigations: active ? 1 : 0,
+    message: connected ? '浏览器扩展 0.1.8 已连接，将在当前电脑采集公开意见。' : '浏览器扩展 0.1.8 已就绪，请登录 B站后点击连接浏览器扩展。'};
 }
 function event(job: Job, type: string, payload: unknown) {
   if (job.disconnected) return;
@@ -219,6 +219,9 @@ async function toolTab(group: ToolGroup, job?: Job) {
     await persistOwned();
     if (tab.windowId === undefined || (group.windowId !== undefined && tab.windowId !== group.windowId)
       || !ownsDocument(await chrome.tabs.get(id), expected)) throw new Error('调查标签页已被用户移动。');
+    // Mute the owned blank tab before any site code can play audio, including
+    // the initial tab returned by windows.create. This also covers Web Audio.
+    await chrome.tabs.update(id, {muted: true});
     const reuse = await hasGroupAnchor(group);
     if (!ownsDocument(await chrome.tabs.get(id), expected)) throw new Error('调查标签页已被用户更改。');
     const groupId = await chrome.tabs.group({tabIds: id, ...(reuse ? {groupId: group.groupId}
@@ -269,7 +272,7 @@ async function navigateOwned(id: number, url: string) {
     owned.set(id, expected);
     throw error;
   }
-  try { await chrome.tabs.update(id, {url}); }
+  try { await chrome.tabs.update(id, {url, muted: true}); }
   catch (error) {
     let observed: Tab | undefined;
     try { observed = await chrome.tabs.get(id); } catch { /* An uncertain result retains both owned documents for cleanup. */ }

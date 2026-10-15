@@ -235,3 +235,8 @@ dedicated window and the orange investigation group. Comment retries change
 selection only inside that window. The user's existing window keeps its active
 tab. Cleanup closes only verified owned tabs; user-added or repurposed tabs keep
 their window open.
+Extension `0.1.8` automatically mutes every tool-created tab before opening
+Bilibili, and reapplies mute when reusing it for another source. Foreground
+comment retries stay muted, while existing user tabs retain their audio settings.
+Replace the extension files, reload it in Chrome, and refresh the portal to use
+this fix.
