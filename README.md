@@ -212,6 +212,35 @@ npm run build:hosted
 Outputs are `web/hosted-dist/`, `build/chrome-extension/`, and
 `build/naruto-mobile-chrome-extension.zip`. These generated artifacts remain
 ignored. `npm run build` continues to produce the desktop bundle in `web/dist/`.
+
+### Required Archtree synchronization after every `main` push
+
+Every push to this repository's `main` branch must be followed by a matching
+update on `yangyinxu/Archtree`'s `develop` branch, including documentation-only
+pushes. The person or agent pushing Naruto is responsible for both steps;
+pushing this repository alone does not update the hosted `/naruto/` site.
+
+1. Commit and push the intended Naruto changes, then record the complete pushed
+   commit SHA with `git rev-parse HEAD`.
+2. In the Archtree checkout on `develop`, update the Naruto source handoff in
+   its README to that exact SHA. Prepare the hosted distribution from a clean
+   checkout of that pushed commit with `npm run prepare:naruto-web -- <source-directory>`,
+   and run `npm run smoke:naruto-web`. Verify that
+   `naruto-web/dist/release-source.json` reports the same `sourceCommit` and
+   `sourceDirty: false`.
+3. Commit and push the matching Archtree synchronization to `develop`. Preserve
+   unrelated changes and keep generated bundles, extension ZIPs, and deployment
+   archives ignored.
+4. Report both repository commits and distinguish the completed `develop`
+   handoff from a production deployment. Before an authorized Archtree `main`
+   release, set its Actions variable `NARUTO_SOURCE_COMMIT` to the same full
+   Naruto SHA; changing the variable alone does not deploy anything. Routine
+   synchronization must not push Archtree `main` or deploy production.
+
+This is a required collaboration workflow, not an installed CI automation.
+
+### Local hosted development
+
 For development, start Archtree locally on port 8080 and run:
 
 ```powershell
