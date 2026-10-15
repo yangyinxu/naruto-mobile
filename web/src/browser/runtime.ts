@@ -60,7 +60,12 @@ export class BrowserResearchRuntime {
     if (page && typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel('naruto:local-run-change');
       this.channel.onmessage = (event) => {
-        if (typeof event.data?.id === 'string') void store.get(event.data.id).then((run) => this.emit(run.manifest, false)).catch(() => undefined);
+        if (typeof event.data?.id !== 'string') return;
+        if (event.data.deleted === true) {
+          this.unsavedFailures.delete(event.data.id);
+          return;
+        }
+        void store.get(event.data.id).then((run) => this.emit(run.manifest, false)).catch(() => undefined);
       };
     }
     page?.addEventListener('pagehide', () => {
@@ -142,6 +147,21 @@ export class BrowserResearchRuntime {
   async get(id: string) {
     await this.initialize();
     return this.unsavedFailures.get(id) ?? (await this.store.get(id)).manifest;
+  }
+
+  async delete(id: string) {
+    await this.initialize();
+    const runningMessage = '该调查正在运行，请先暂停采集或等待分析完成后删除。';
+    if (this.active.has(id)) throw new Error(runningMessage);
+    const release = await this.locks.acquire(id);
+    try {
+      const run = await this.store.get(id);
+      const manifest = this.unsavedFailures.get(id) ?? run.manifest;
+      if (this.active.has(id) || activeStates.has(manifest.state)) throw new Error(runningMessage);
+      await this.store.delete(id);
+      this.unsavedFailures.delete(id);
+      this.channel?.postMessage({id, deleted: true});
+    } finally {release();}
   }
 
   private async reserve(id: string, kind: ActiveJob['kind']) {

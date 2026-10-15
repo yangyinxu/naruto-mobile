@@ -1,5 +1,5 @@
 import {fireEvent, render, screen, waitFor} from '@testing-library/react';
-import {describe, expect, it, vi} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {RunManifest} from '../types';
 import {History} from './History';
 
@@ -30,6 +30,7 @@ const renderHistory = (overrides: Partial<React.ComponentProps<typeof History>> 
   const props = {
     runs: [run], onOpen: vi.fn(), onBrowse: vi.fn(), onOpenFolder: vi.fn(),
     onImport: vi.fn().mockResolvedValue(run), onExport: vi.fn().mockResolvedValue(undefined),
+    onDelete: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
   render(<History {...props}/>);
@@ -40,17 +41,21 @@ const selectFile = (file?: File) => fireEvent.change(screen.getByLabelText('选�
   target: {files: file ? [file] : []}
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('History', () => {
   it('offers portable ZIP backup for browser data without an unavailable OS folder action', () => {
     renderHistory({browserRuntime: true});
     expect(screen.getByRole('button', {name: /导出.*调查 ZIP/})).toBeVisible();
     expect(screen.getByRole('button', {name: '浏览完整记录'})).toBeVisible();
+    expect(screen.getByRole('button', {name: /删除 .* 的调查/})).toBeVisible();
     expect(screen.queryByRole('button', {name: /打开.*完整记录文件夹/})).not.toBeInTheDocument();
   });
   it('offers complete record browsing and folder opening for every run', () => {
     const onBrowse = vi.fn();
     const onOpenFolder = vi.fn();
     renderHistory({onBrowse, onOpenFolder});
+    expect(screen.queryByRole('button', {name: /删除 .* 的调查/})).not.toBeInTheDocument();
     expect(screen.getByText('条原始记录')).toBeInTheDocument();
     expect(screen.getByText('最长 5 分钟')).toBeInTheDocument();
     expect(screen.getByText(/清理去重前的评论、回复、弹幕和作者观点合计/)).toBeInTheDocument();
@@ -153,5 +158,115 @@ describe('History', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('当前后台版本不支持调查 ZIP');
     expect(screen.getByRole('button', {name: '导入调查'})).toBeDisabled();
     expect(screen.getByRole('button', {name: /导出 .* 的调查 ZIP/})).toBeDisabled();
+  });
+
+  it('keeps the record when deletion confirmation is cancelled', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const props = renderHistory({browserRuntime: true});
+    fireEvent.click(screen.getByRole('button', {name: /删除 .* 的调查/}));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('无法撤销'));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('先导出调查 ZIP 备份'));
+    expect(props.onDelete).not.toHaveBeenCalled();
+    expect(screen.getByText(run.request.name)).toBeVisible();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it.each(['paused', 'completed', 'completed_early', 'failed_recoverable'] as const)('deletes a confirmed settled %s record', async (state) => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const settled = {...run, state};
+    const props = renderHistory({browserRuntime: true, runs: [settled]});
+    fireEvent.click(screen.getByRole('button', {name: /删除 .* 的调查/}));
+    await waitFor(() => expect(props.onDelete).toHaveBeenCalledWith(settled));
+    expect(await screen.findByRole('status')).toHaveTextContent(`已删除“${run.request.name}”`);
+  });
+
+  it.each(['created', 'discovering', 'collecting', 'pause_requested', 'processing'] as const)('blocks deletion of a running %s record', (state) => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const props = renderHistory({browserRuntime: true, runs: [{...run, state}]});
+    const button = screen.getByRole('button', {name: /删除 .* 的调查/});
+    expect(button).toBeDisabled();
+    expect(screen.getByText('调查运行中请先暂停采集，或等待分析完成后导出、删除。')).toBeVisible();
+    fireEvent.click(button);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it('prevents deletion while an import is pending', async () => {
+    let finish!: (value: RunManifest) => void;
+    const onImport = vi.fn().mockImplementation(() => new Promise<RunManifest>(resolve => {finish = resolve;}));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const props = renderHistory({browserRuntime: true, onImport});
+    selectFile(new File(['zip'], '调查.zip'));
+    const button = screen.getByRole('button', {name: /删除 .* 的调查/});
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    finish(run);
+    await waitFor(() => expect(button).toBeEnabled());
+  });
+
+  it('prevents deletion while an export is pending', async () => {
+    let finish!: () => void;
+    const onExport = vi.fn().mockImplementation(() => new Promise<void>(resolve => {finish = resolve;}));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const props = renderHistory({browserRuntime: true, onExport});
+    fireEvent.click(screen.getByRole('button', {name: /导出 .* 的调查 ZIP/}));
+    const button = screen.getByRole('button', {name: /删除 .* 的调查/});
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(button).toBeEnabled());
+  });
+
+  it('prevents import, export, and another deletion until the pending deletion succeeds', async () => {
+    let finish!: () => void;
+    const onDelete = vi.fn().mockImplementation(() => new Promise<void>(resolve => {finish = resolve;}));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const otherRun = {...run, id: 'second-run', request: {...run.request, name: '另一份调查'}};
+    const props = renderHistory({browserRuntime: true, runs: [run, otherRun], onDelete});
+    const button = screen.getByRole('button', {name: `删除 ${run.request.name} 的调查`});
+    fireEvent.click(button);
+    expect(screen.getByRole('status')).toHaveTextContent(`正在删除“${run.request.name}”`);
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByText(/已删除/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: '导入调查'})).toBeDisabled();
+    expect(screen.getByLabelText('选择调查 ZIP 文件')).toBeDisabled();
+    for (const exportButton of screen.getAllByRole('button', {name: /导出 .* 的调查 ZIP/})) {
+      expect(exportButton).toBeDisabled();
+      fireEvent.click(exportButton);
+    }
+    for (const deleteButton of screen.getAllByRole('button', {name: /删除 .* 的调查/})) {
+      expect(deleteButton).toBeDisabled();
+      fireEvent.click(deleteButton);
+    }
+    selectFile(new File(['zip'], '调查.zip'));
+    expect(props.onImport).not.toHaveBeenCalled();
+    expect(props.onExport).not.toHaveBeenCalled();
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    finish();
+    expect(await screen.findByText(/已删除“历史记录入口测试”/)).toBeVisible();
+    expect(button).toBeEnabled();
+    expect(screen.getByRole('button', {name: '导入调查'})).toBeEnabled();
+    expect(screen.getByRole('button', {name: `导出 ${run.request.name} 的调查 ZIP`})).toBeEnabled();
+  });
+
+  it('keeps failed deletion retryable and reports success only after a successful retry', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onDelete = vi.fn().mockRejectedValueOnce(new Error('删除失败：存储事务未提交')).mockResolvedValueOnce(undefined);
+    renderHistory({browserRuntime: true, onDelete});
+    const button = screen.getByRole('button', {name: /删除 .* 的调查/});
+    fireEvent.click(button);
+    expect(await screen.findByRole('alert')).toHaveTextContent('删除失败：存储事务未提交');
+    expect(button).toBeEnabled();
+    expect(screen.getByText(run.request.name)).toBeVisible();
+    expect(screen.queryByText(/已删除/)).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(await screen.findByText(/已删除“历史记录入口测试”/)).toBeVisible();
+    expect(onDelete).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

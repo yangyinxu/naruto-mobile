@@ -18,9 +18,70 @@ const run: RunManifest = {
   reportReady: true
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('RecordsView', () => {
+  const mockEmptyRecords = () => vi.spyOn(api, 'runRecords').mockResolvedValue({
+    kind: 'opinions', total: 0, offset: 0, limit: 50, records: []
+  });
+
+  it('opens the complete records folder in desktop mode', async () => {
+    vi.stubEnv('MODE', 'test');
+    mockEmptyRecords();
+    const openFolder = vi.spyOn(api, 'openFolder').mockResolvedValue({ok: true});
+    const exportRun = vi.spyOn(api, 'exportRun').mockResolvedValue(undefined);
+    render(<RecordsView run={run} onBack={vi.fn()} onError={vi.fn()}/>);
+
+    fireEvent.click(screen.getByRole('button', {name: '打开完整记录文件夹'}));
+    expect(openFolder).toHaveBeenCalledWith(run.id);
+    expect(screen.queryByRole('button', {name: '导出调查 ZIP'})).not.toBeInTheDocument();
+    expect(exportRun).not.toHaveBeenCalled();
+    await screen.findByText('没有找到记录');
+  });
+
+  it('exports a ZIP in hosted mode', async () => {
+    vi.stubEnv('MODE', 'hosted');
+    mockEmptyRecords();
+    const openFolder = vi.spyOn(api, 'openFolder').mockResolvedValue({ok: true});
+    const exportRun = vi.spyOn(api, 'exportRun').mockResolvedValue(undefined);
+    render(<RecordsView run={run} onBack={vi.fn()} onError={vi.fn()}/>);
+
+    const exportButton = screen.getByRole('button', {name: '导出调查 ZIP'});
+    expect(exportButton).toBeEnabled();
+    expect(screen.queryByRole('button', {name: '打开完整记录文件夹'})).not.toBeInTheDocument();
+    fireEvent.click(exportButton);
+    expect(exportRun).toHaveBeenCalledWith(run.id);
+    expect(openFolder).not.toHaveBeenCalled();
+    await screen.findByText('没有找到记录');
+  });
+
+  it.each(['created', 'discovering', 'collecting', 'pause_requested', 'processing'] as const)('disables hosted export while the run is %s', async (state) => {
+    vi.stubEnv('MODE', 'hosted');
+    mockEmptyRecords();
+    const exportRun = vi.spyOn(api, 'exportRun').mockResolvedValue(undefined);
+    render(<RecordsView run={{...run, state}} onBack={vi.fn()} onError={vi.fn()}/>);
+
+    const exportButton = screen.getByRole('button', {name: '导出调查 ZIP'});
+    expect(exportButton).toBeDisabled();
+    fireEvent.click(exportButton);
+    expect(exportRun).not.toHaveBeenCalled();
+    await screen.findByText('没有找到记录');
+  });
+
+  it('reports hosted export errors', async () => {
+    vi.stubEnv('MODE', 'hosted');
+    mockEmptyRecords();
+    vi.spyOn(api, 'exportRun').mockRejectedValue(new Error('导出失败'));
+    const onError = vi.fn();
+    render(<RecordsView run={run} onBack={vi.fn()} onError={onError}/>);
+
+    fireEvent.click(screen.getByRole('button', {name: '导出调查 ZIP'}));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('导出失败'));
+  });
+
   it('shows a traceable opinion and searches complete records', async () => {
     const records = vi.spyOn(api, 'runRecords').mockResolvedValue({
       kind: 'opinions', total: 1, offset: 0, limit: 50,

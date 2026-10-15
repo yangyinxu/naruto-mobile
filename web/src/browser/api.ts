@@ -68,6 +68,7 @@ export const browserApi = {
   logoutAnalysis: async (): Promise<void> => {window.location.assign(ACCOUNT_URL);},
   selectDataRoot: async () => ({dataRoot: LOCAL_DATA_DESCRIPTION, cancelled: true}),
   listRuns: () => browserRuntime().list(),
+  deleteRun: (id: string): Promise<void> => browserRuntime().delete(id),
   importRun: async (file: File) => {
     if (!file.size || file.size > 128 * 1024 * 1024) throw new Error('请选择不超过 128 MiB 的调查 ZIP 文件。');
     const run = decodeRunArchive(new Uint8Array(await file.arrayBuffer()));

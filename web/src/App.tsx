@@ -119,6 +119,12 @@ export default function App() {
     return run;
   };
 
+  const deleteRun = async (run: RunManifest) => {
+    await api.deleteRun(run.id);
+    setRuns((current) => current.filter((item) => item.id !== run.id));
+    setSelected((current) => current?.id === run.id ? undefined : current);
+  };
+
   const openChromeSettings = async () => {
     setError('');
     try {
@@ -233,7 +239,7 @@ export default function App() {
         <ChromeGuide chromeSettingsSupported={(settings.apiVersion ?? 0) >= 6} chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onOpenChromeSettings={openChromeSettings} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'history' && (
-        <History runs={runs} browserRuntime={settings.runtime === 'browser'} archiveSupported={(settings.apiVersion ?? 0) >= 11} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder} onImport={importRun} onExport={(run) => api.exportRun(run.id)}/>
+        <History runs={runs} browserRuntime={settings.runtime === 'browser'} archiveSupported={(settings.apiVersion ?? 0) >= 11} onOpen={openRun} onBrowse={browseRecords} onOpenFolder={openRunFolder} onImport={importRun} onExport={(run) => api.exportRun(run.id)} onDelete={deleteRun}/>
       )}
       {view === 'run' && selected && (
         <RunDetail initial={selected} onBack={() => {void loadRuns(); setView('history');}} onReport={(run) => {setSelected(run); setView('report');}} onError={setError}/>

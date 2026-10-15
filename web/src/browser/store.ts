@@ -62,6 +62,19 @@ export class BrowserRunStore implements RunStorage {
     return this.transaction<void>('runs', 'readwrite', (store) => {store.add(run);});
   }
 
+  /** Delete the entire snapshot only after the transaction durably commits. */
+  delete(id: string) {
+    return this.transaction<void>('runs', 'readwrite', (store, _set, setFailure) => {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        try {
+          if (!request.result) throw new Error('本机没有这份调查。');
+          store.delete(id);
+        } catch (error) {setFailure(error); request.transaction?.abort();}
+      };
+    });
+  }
+
   update(id: string, transform: (run: BrowserRun) => BrowserRun) {
     return this.transaction<BrowserRun>('runs', 'readwrite', (store, set, setFailure) => {
       const request = store.get(id);

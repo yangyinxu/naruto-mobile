@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   ExternalLink,
   FileJson,
   FolderOpen,
@@ -22,6 +23,7 @@ interface Props {
 }
 
 const pageSize = 50;
+const activeStates = new Set(['created', 'discovering', 'collecting', 'pause_requested', 'processing']);
 const sourceLabels: Record<OpinionRecord['sourceType'], string> = {
   comment: '评论',
   reply: '回复',
@@ -113,7 +115,9 @@ export const RecordsView = ({run, onBack, onError}: Props) => {
       <button className="back-button" onClick={onBack}><ArrowLeft size={17}/> 返回历史调查</button>
       <section className="records-header">
         <div><span className="eyebrow"><Database size={15}/> 明文调查档案</span><h1>{run.request.name}</h1><p>逐条浏览完整采集记录；展开可查看原始 JSON，来源链接可直接核查。</p></div>
-        <button className="secondary-action" onClick={() => void api.openFolder(run.id).catch((error) => onError(error.message))}><FolderOpen size={17}/>打开完整记录文件夹</button>
+        {import.meta.env.MODE === 'hosted'
+          ? <button className="secondary-action" disabled={activeStates.has(run.state)} onClick={() => void api.exportRun(run.id).catch((error) => onError(error.message))}><Download size={17}/>导出调查 ZIP</button>
+          : <button className="secondary-action" onClick={() => void api.openFolder(run.id).catch((error) => onError(error.message))}><FolderOpen size={17}/>打开完整记录文件夹</button>}
       </section>
 
       <section className="records-toolbar">

@@ -54,6 +54,9 @@ const desktopApi = {
     {method: 'POST'}
   ),
   listRuns: async () => (await request<{runs: RunManifest[]}>('/api/runs')).runs,
+  deleteRun: async (_id: string): Promise<void> => {
+    throw new Error('当前桌面版本请通过调查数据文件夹管理记录。');
+  },
   importRun: async (file: File): Promise<RunManifest> => {
     const response = await fetch('/api/runs/import', {
       method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file

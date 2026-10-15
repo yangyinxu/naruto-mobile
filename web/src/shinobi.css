@@ -792,7 +792,8 @@ html[data-skin="shinobi"] body {
   background: rgba(255, 255, 255, .18);
 }
 
-.skin-shinobi .run-record-actions .browse-records {
+.skin-shinobi .run-record-actions .browse-records,
+.skin-shinobi .run-record-actions .delete-run {
   color: #7f2b23;
   border-color: rgba(127, 43, 35, .48);
   background: rgba(160, 56, 44, .08);

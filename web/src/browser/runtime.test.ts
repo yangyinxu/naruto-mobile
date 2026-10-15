@@ -88,6 +88,99 @@ const until = async (condition: () => Promise<boolean>) => {
 beforeEach(() => {vi.stubGlobal('crypto', webcrypto);});
 
 describe('browser local persistence and cross-tab lifecycle', () => {
+  it.each(['paused', 'completed', 'completed_early', 'failed_recoverable'] as const)('deletes a settled %s snapshot', async (state) => {
+    const store = new BrowserRunStore(`delete-${state}`, new IDBFactory());
+    const run = snapshot(state);
+    run.report = '<html>saved report</html>';
+    await store.create(run);
+    const runtime = new BrowserResearchRuntime(store, new FakeBridge(), service().session, new BrowserRunLocks(lockManager()));
+    await runtime.delete(runId);
+    expect(await runtime.list()).toEqual([]);
+    await expect(runtime.get(runId)).rejects.toThrow('本机没有这份调查');
+    await expect(store.get(runId)).rejects.toThrow('本机没有这份调查');
+  });
+
+  it.each(['created', 'discovering', 'collecting', 'pause_requested', 'processing'] as const)('checks the persisted %s state under the deletion lock', async (state) => {
+    const store = new BrowserRunStore(`delete-active-${state}`, new IDBFactory()), locks = new BrowserRunLocks(lockManager());
+    await store.create(snapshot());
+    const runtime = new BrowserResearchRuntime(store, new FakeBridge(), service().session, locks);
+    await runtime.initialize();
+    // A state change after initialization must not be treated as a settled historical record.
+    await store.update(runId, (run) => {run.manifest.state = state; return run;});
+    await expect(runtime.delete(runId)).rejects.toThrow('等待分析完成后删除');
+    expect((await store.get(runId)).manifest.state).toBe(state);
+    const release = await locks.acquire(runId);
+    release();
+  });
+
+  it('refuses to delete an active job in the same page until collection finishes pausing', async () => {
+    const store = new BrowserRunStore('delete-same-page-active', new IDBFactory()), bridge = new FakeBridge();
+    await store.create(snapshot());
+    const runtime = new BrowserResearchRuntime(store, bridge, service().session, new BrowserRunLocks(lockManager()));
+    await runtime.resume(runId);
+    await expect(runtime.delete(runId)).rejects.toThrow('该调查正在运行');
+    expect((await store.get(runId)).opinions).toEqual([opinion]);
+    bridge.send('complete', {outcome: 'paused', checkpoint: snapshot().checkpoint});
+    await until(async () => (await runtime.get(runId)).state === 'paused');
+    await runtime.delete(runId);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it('refuses deletion under another page lease and permits it after the lease is released', async () => {
+    const store = new BrowserRunStore('delete-other-page', new IDBFactory()), manager = lockManager();
+    await store.create(snapshot());
+    const runtime = new BrowserResearchRuntime(store, new FakeBridge(), service().session, new BrowserRunLocks(manager));
+    const release = await new BrowserRunLocks(manager).acquire(runId);
+    await expect(runtime.delete(runId)).rejects.toThrow('另一个页面');
+    expect((await store.get(runId)).opinions).toEqual([opinion]);
+    release();
+    await Promise.resolve();
+    await runtime.delete(runId);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it('releases the deletion lease after missing data or a write failure so deletion can be retried', async () => {
+    const store = new BrowserRunStore('delete-retry', new IDBFactory()), locks = new BrowserRunLocks(lockManager());
+    const runtime = new BrowserResearchRuntime(store, new FakeBridge(), service().session, locks);
+    await expect(runtime.delete(runId)).rejects.toThrow('本机没有这份调查');
+    await store.create(snapshot());
+    vi.spyOn(store, 'delete').mockRejectedValueOnce(new Error('磁盘写入失败'));
+    await expect(runtime.delete(runId)).rejects.toThrow('磁盘写入失败');
+    expect((await store.get(runId)).opinions).toEqual([opinion]);
+    await runtime.delete(runId);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it('clears cached recovery failures in this page and another page after durable deletion', async () => {
+    class FakeBroadcastChannel {
+      static channels: FakeBroadcastChannel[] = [];
+      onmessage?: (event: MessageEvent) => void;
+      constructor(_name: string) {FakeBroadcastChannel.channels.push(this);}
+      postMessage(data: unknown) {
+        for (const channel of FakeBroadcastChannel.channels) {
+          if (channel !== this) channel.onmessage?.({data} as MessageEvent);
+        }
+      }
+    }
+    vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel);
+    try {
+      const store = new BrowserRunStore('delete-recovery-cache', new IDBFactory()), manager = lockManager();
+      await store.create(snapshot('processing'));
+      vi.spyOn(store, 'update').mockRejectedValue(new Error('存储空间不足'));
+      const createRuntime = () => new BrowserResearchRuntime(store, new FakeBridge(), service().session,
+        new BrowserRunLocks(manager), window);
+      const first = createRuntime(), second = createRuntime();
+      await first.initialize();
+      await second.initialize();
+      expect((await first.get(runId)).state).toBe('failed_recoverable');
+      expect((await second.get(runId)).state).toBe('failed_recoverable');
+      await first.delete(runId);
+      await expect(first.get(runId)).rejects.toThrow('本机没有这份调查');
+      await expect(second.get(runId)).rejects.toThrow('本机没有这份调查');
+      expect(await store.list()).toEqual([]);
+    } finally {vi.unstubAllGlobals();}
+  });
+
   it('requires window isolation before creating live work with an older installed extension', async () => {
     for (const capability of [undefined, null, 0, 2, '1']) {
       const store = new BrowserRunStore(`old-window-start-${String(capability)}`, new IDBFactory()), bridge = new FakeBridge();
@@ -443,7 +536,7 @@ describe('browser local persistence and cross-tab lifecycle', () => {
     expect((await runtime.get(runId)).state).toBe('completed_early');
   });
 
-  it('pauses a pending transport retry without sending more requests or losing saved classifications', async () => {
+  it('preserves classifications while analysis pauses, then deletes the paused investigation with its saved cache and report', async () => {
     const store = new BrowserRunStore('pause-transport-retry', new IDBFactory()), data = snapshot();
     data.manifest.stopReason = 'user_finalized'; data.manifest.progress = {phase: 'analyzing'};
     await store.create(data);
@@ -482,8 +575,12 @@ describe('browser local persistence and cross-tab lifecycle', () => {
       expect(paused.manifest.reportReady).toBe(false);
       expect(paused.opinions).toHaveLength(2);
       expect(paused.cache).toEqual(savedCache);
+      expect(paused.report).toContain('调查报告');
       expect(proxy.fetchImpl.mock.calls.filter(([path]) => String(path).endsWith('/classify'))).toHaveLength(requests);
     } finally {vi.useRealTimers();}
+    await runtime.delete(runId);
+    expect(await runtime.list()).toEqual([]);
+    await expect(store.get(runId)).rejects.toThrow('本机没有这份调查');
   });
 
   it('supports a fully local demonstration without signing in or contacting the extension', async () => {

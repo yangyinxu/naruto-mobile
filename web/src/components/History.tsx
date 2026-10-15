@@ -1,5 +1,5 @@
 import {ChangeEvent, useRef, useState} from 'react';
-import {Clock3, Download, Eye, FileText, FolderOpen, LoaderCircle, PauseCircle, PlayCircle, Upload} from 'lucide-react';
+import {Clock3, Download, Eye, FileText, FolderOpen, LoaderCircle, PauseCircle, PlayCircle, Trash2, Upload} from 'lucide-react';
 import {RunManifest} from '../types';
 import {StatusBadge} from './StatusBadge';
 
@@ -12,15 +12,17 @@ interface Props {
   browserRuntime?: boolean;
   onImport: (file: File) => Promise<RunManifest>;
   onExport: (run: RunManifest) => Promise<void>;
+  onDelete: (run: RunManifest) => Promise<void>;
 }
 
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const activeStates = new Set(['discovering', 'collecting', 'pause_requested', 'processing']);
+const deleteBlockedStates = new Set(['created', ...activeStates]);
 
-export const History = ({runs, archiveSupported = true, browserRuntime = false, onOpen, onBrowse, onOpenFolder, onImport, onExport}: Props) => {
+export const History = ({runs, archiveSupported = true, browserRuntime = false, onOpen, onBrowse, onOpenFolder, onImport, onExport, onDelete}: Props) => {
   const fileInput = useRef<HTMLInputElement>(null);
   const busyRef = useRef(false);
-  const [operation, setOperation] = useState<{kind: 'import' | 'export'; name: string; runId?: string}>();
+  const [operation, setOperation] = useState<{kind: 'import' | 'export' | 'delete'; name: string; runId?: string}>();
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [imported, setImported] = useState<RunManifest>();
@@ -73,6 +75,25 @@ export const History = ({runs, archiveSupported = true, browserRuntime = false, 
     }
   };
 
+  const deleteRun = async (run: RunManifest) => {
+    if (busyRef.current || !browserRuntime || deleteBlockedStates.has(run.state)) return;
+    if (!window.confirm(`确定删除“${run.request.name}”吗？\n\n这会永久删除当前 Chrome 中这份调查的原始记录、采集进度、分析缓存和报告，无法撤销。需要保留时，请先导出调查 ZIP 备份。`)) return;
+    busyRef.current = true;
+    setError('');
+    setSuccess('');
+    setImported(undefined);
+    setOperation({kind: 'delete', name: run.request.name, runId: run.id});
+    try {
+      await onDelete(run);
+      setSuccess(`已删除“${run.request.name}”及其本机记录、缓存和报告。`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除失败，请稍后重试。');
+    } finally {
+      busyRef.current = false;
+      setOperation(undefined);
+    }
+  };
+
   return (
   <main className="history-page content-width">
     <div className="page-title history-title"><div><span className="eyebrow">调查档案</span><h1>历史调查</h1><p>未完成的调查可以继续，已完成的报告随时可查看。记录数为清理去重前的评论、回复、弹幕和作者观点合计；时长为设定的最长采集时间。</p></div>
@@ -81,7 +102,7 @@ export const History = ({runs, archiveSupported = true, browserRuntime = false, 
     </div>
     <div className="archive-guide"><FileText size={20} aria-hidden="true"/><div><strong>把一次调查打包分享</strong><p>点击记录旁的“导出调查”保存一个 ZIP，包含原始记录、已有分析和报告。对方在此工具的“历史调查 → 导入调查”中选择 ZIP，即可查看；导入和查看不需要登录或重新调用 AI。导入大小上限 128 MiB，指 ZIP 文件本身的大小。</p></div></div>
     {!archiveSupported && <div className="archive-notice archive-error" role="alert">当前后台版本不支持调查 ZIP。请关闭工具后重新启动更新后的 EXE，再导入或导出。</div>}
-    {operation && <div className="archive-notice" role="status" aria-live="polite" aria-busy="true"><LoaderCircle size={18} className="archive-spinner" aria-hidden="true"/><span>{operation.kind === 'import' ? '正在导入并检查' : '正在打包'}“{operation.name}”，请稍候…</span></div>}
+    {operation && <div className="archive-notice" role="status" aria-live="polite" aria-busy="true"><LoaderCircle size={18} className="archive-spinner" aria-hidden="true"/><span>{operation.kind === 'import' ? '正在导入并检查' : operation.kind === 'delete' ? '正在删除' : '正在打包'}“{operation.name}”，请稍候…</span></div>}
     {error && <div className="archive-notice archive-error" role="alert">{error}</div>}
     {success && <div className="archive-notice archive-success" role="status" aria-live="polite"><span>{success}</span>{imported && <button className="secondary-action" onClick={() => onOpen(imported)}>查看导入调查</button>}</div>}
     {runs.length === 0 ? (
@@ -101,8 +122,9 @@ export const History = ({runs, archiveSupported = true, browserRuntime = false, 
                 <button className="browse-records" onClick={() => onBrowse(run)}><Eye size={17}/>浏览完整记录</button>
                 {!browserRuntime && <button aria-label={`打开 ${run.request.name} 的完整记录文件夹`} title="打开完整记录文件夹" onClick={() => onOpenFolder(run)}><FolderOpen size={17}/></button>}
                 <button className="export-run" aria-label={`导出 ${run.request.name} 的调查 ZIP`} disabled={!!operation || !archiveSupported || activeStates.has(run.state)} title={activeStates.has(run.state) ? '调查仍在运行，请先暂停采集或等待分析完成。' : '打包原始记录、已有分析和报告为 ZIP'} onClick={() => void exportRun(run)}>{operation?.kind === 'export' && operation.runId === run.id ? <LoaderCircle size={17} className="archive-spinner"/> : <Download size={17}/>}导出调查</button>
+                {browserRuntime && <button className="delete-run" aria-label={`删除 ${run.request.name} 的调查`} disabled={!!operation || deleteBlockedStates.has(run.state)} title={deleteBlockedStates.has(run.state) ? '调查仍在运行，请先暂停采集或等待分析完成后删除。' : '永久删除这份调查的本机记录、缓存和报告'} onClick={() => void deleteRun(run)}>{operation?.kind === 'delete' && operation.runId === run.id ? <LoaderCircle size={17} className="archive-spinner"/> : <Trash2 size={17}/>}删除调查</button>}
               </div>
-              {activeStates.has(run.state) && <small className="archive-active-note">采集中请先暂停；分析中请等待完成后导出。</small>}
+              {(browserRuntime ? deleteBlockedStates : activeStates).has(run.state) && <small className="archive-active-note">{browserRuntime ? '调查运行中请先暂停采集，或等待分析完成后导出、删除。' : '采集中请先暂停；分析中请等待完成后导出。'}</small>}
             </div>
           </article>
         ))}

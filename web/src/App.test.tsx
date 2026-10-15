@@ -2,9 +2,9 @@ import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import App from './App';
 import {api} from './lib/api';
-import type {AppSettings} from './types';
+import type {AppSettings, RunManifest} from './types';
 
-vi.mock('./lib/api', () => ({api: {settings: vi.fn(), listRuns: vi.fn(), chromeStatus: vi.fn(), startRun: vi.fn()}}));
+vi.mock('./lib/api', () => ({api: {settings: vi.fn(), listRuns: vi.fn(), chromeStatus: vi.fn(), startRun: vi.fn(), deleteRun: vi.fn()}}));
 
 const settings = (userId: string): AppSettings => ({apiVersion: 11, runtime: 'browser', dataRoot: '当前浏览器本地存储',
   analysis: {aiConfigured: true, transport: 'proxy', model: 'gpt-6-luna', reasoningEffort: 'medium', liveMode: 'ai', demoMode: 'rule_demo',
@@ -12,11 +12,21 @@ const settings = (userId: string): AppSettings => ({apiVersion: 11, runtime: 'br
   defaults: {durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'], includeVideos: true,
     includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20}});
 
+const run: RunManifest = {
+  id: 'browser-delete-test', state: 'completed', request: {...settings('test-user').defaults, name: '待删除调查'},
+  createdAt: '2026-10-14T12:00:00.000Z', updatedAt: '2026-10-14T12:05:00.000Z', activeElapsedMs: 300_000,
+  statusMessage: '调查和报告已经完成。',
+  counts: {candidates: 4, contents: 3, opinions: 12, validOpinions: 10, sources: 3, warnings: 0}, reportReady: true
+};
+const otherRun: RunManifest = {...run, id: 'browser-retained-test', request: {...run.request, name: '保留调查'}};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('MODE', 'hosted');
   vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+  vi.mocked(api.settings).mockResolvedValue(settings('test-user'));
   vi.mocked(api.listRuns).mockResolvedValue([]);
+  vi.mocked(api.deleteRun).mockResolvedValue(undefined);
   vi.mocked(api.chromeStatus).mockResolvedValue({state: 'connected', connected: true, remoteDebuggingEnabled: false,
     loginState: 'logged_in', activeInvestigations: 0, message: 'B站已登录，可以开始调查。'});
 });
@@ -43,5 +53,50 @@ describe('hosted displayed account transitions', () => {
     await act(async () => {resolveOld(settings('account-A')); await oldRefresh;});
     expect(screen.getByText('account-B@example.test · 登录有效')).toBeVisible();
     expect(screen.queryByText('account-A@example.test · 登录有效')).not.toBeInTheDocument();
+  });
+});
+
+describe('browser history deletion', () => {
+  const openHistory = async () => {
+    const navigation = await screen.findByRole('button', {name: /^历史调查\s*2$/});
+    await act(async () => {fireEvent.click(navigation);});
+    expect(await screen.findByRole('heading', {name: '历史调查'})).toBeVisible();
+  };
+
+  it('removes only the confirmed record and updates the history count after deletion completes', async () => {
+    let finish!: () => void;
+    const deleted = new Promise<void>(resolve => {finish = resolve;});
+    vi.mocked(api.listRuns).mockResolvedValue([run, otherRun]);
+    vi.mocked(api.deleteRun).mockReturnValue(deleted);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<App/>);
+    await openHistory();
+    fireEvent.click(screen.getByRole('button', {name: `删除 ${run.request.name} 的调查`}));
+    expect(api.deleteRun).toHaveBeenCalledWith(run.id);
+    expect(screen.getByText(run.request.name)).toBeVisible();
+    expect(screen.getByRole('button', {name: /^历史调查\s*2$/})).toBeVisible();
+    await act(async () => {finish(); await deleted;});
+    expect(await screen.findByText(`已删除“${run.request.name}”及其本机记录、缓存和报告。`)).toBeVisible();
+    expect(screen.queryByText(run.request.name)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: `删除 ${run.request.name} 的调查`})).not.toBeInTheDocument();
+    expect(screen.getByText(otherRun.request.name)).toBeVisible();
+    expect(screen.getByRole('button', {name: /^历史调查\s*1$/})).toBeVisible();
+    expect(api.deleteRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the record and history count when browser deletion fails', async () => {
+    vi.mocked(api.listRuns).mockResolvedValue([run, otherRun]);
+    vi.mocked(api.deleteRun).mockRejectedValue(new Error('浏览器存储删除失败，请重试'));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<App/>);
+    await openHistory();
+    fireEvent.click(screen.getByRole('button', {name: `删除 ${run.request.name} 的调查`}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('浏览器存储删除失败，请重试');
+    expect(api.deleteRun).toHaveBeenCalledWith(run.id);
+    expect(screen.getByText(run.request.name)).toBeVisible();
+    expect(screen.getByText(otherRun.request.name)).toBeVisible();
+    expect(screen.getByRole('button', {name: /^历史调查\s*2$/})).toBeVisible();
+    expect(screen.getByRole('button', {name: `删除 ${run.request.name} 的调查`})).toBeEnabled();
+    expect(screen.queryByText(/已删除/)).not.toBeInTheDocument();
   });
 });

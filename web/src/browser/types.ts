@@ -41,6 +41,7 @@ export interface RunStorage {
   list(): Promise<BrowserRun[]>;
   get(id: string): Promise<BrowserRun>;
   create(run: BrowserRun): Promise<void>;
+  delete(id: string): Promise<void>;
   update(id: string, transform: (run: BrowserRun) => BrowserRun): Promise<BrowserRun>;
   getSetting<T>(key: string): Promise<T | undefined>;
   setSetting(key: string, value: unknown): Promise<void>;

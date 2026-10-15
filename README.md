@@ -193,6 +193,10 @@ analysis caches. Export investigation ZIPs to back up or transfer records betwee
 the browser version and EXE. Clearing site data deletes local investigations.
 Browser storage is independent of the EXE's chosen filesystem directory.
 
+在网页版“历史调查”中，可点击某条记录的“删除调查”，确认后会永久删除
+这份调查的原始记录、进度、分析缓存和报告。需要保留时请先导出 ZIP。
+采集中请先暂停，分析中请等完成后再删除；其他调查和设置会保留。
+
 Archtree login uses the existing same-origin HttpOnly browser session. The
 extension never receives Archtree credentials or the OpenAI key. Browser
 analysis requests use `/naruto/api/v1/classify`; only bounded, de-identified

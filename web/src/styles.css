@@ -197,6 +197,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .imported-run-label { display: block; margin-top: 5px; color: var(--orange-dark); font-size: 11px; }
 .run-record-actions button { min-height: 40px; border: 1px solid #d8d0c3; border-radius: 10px; padding: 9px 10px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: #5c5449; background: #fffdf8; font-weight: 750; white-space: nowrap; }
 .run-record-actions .browse-records { color: #9a3f1e; border-color: #e3c0af; background: #fff6ef; }
+.run-record-actions .delete-run { color: #a54233; border-color: #e5b7ad; background: #fff5f2; }
 .run-icon { width: 42px; height: 42px; border-radius: 12px; background: #f2eadd; display: grid; place-items: center; color: var(--orange-dark); }
 .run-icon svg { width: 20px; }
 .run-main > div { display: flex; align-items: center; gap: 10px; }
