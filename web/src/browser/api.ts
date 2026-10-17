@@ -36,7 +36,9 @@ const decodeChromeStatus = (value: unknown): ChromeConnectionStatus => {
     remoteDebuggingEnabled: false, loginState: status.loginState as ChromeConnectionStatus['loginState'],
     activeInvestigations: status.activeInvestigations, message: text(status.message, 1000),
     ...(typeof status.accountName === 'string' ? {accountName: text(status.accountName, 200)} : {}),
-    ...(typeof status.accountUidSuffix === 'string' ? {accountUidSuffix: text(status.accountUidSuffix, 20)} : {})};
+    ...(typeof status.accountUidSuffix === 'string' ? {accountUidSuffix: text(status.accountUidSuffix, 20)} : {}),
+    // An unreadable version is dropped rather than rejected; the UI then treats the extension as outdated.
+    ...(typeof status.extensionVersion === 'string' && status.extensionVersion.length <= 20 ? {extensionVersion: status.extensionVersion} : {})};
 };
 
 /** Ask Chromium to download a local blob; no raw archive ever leaves this browser. */

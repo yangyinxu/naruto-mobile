@@ -300,6 +300,8 @@ export interface ChromeConnectionStatus {
   loginState: 'unknown' | 'logged_in' | 'logged_out';
   accountName?: string;
   accountUidSuffix?: string;
+  /** Reported only by the browser extension; the desktop Chrome connection has no version. */
+  extensionVersion?: string;
   activeInvestigations: number;
   message: string;
 }

@@ -9,6 +9,7 @@
 import {FormEvent, useMemo, useState} from 'react';
 import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, KeyRound, LoaderCircle, LogOut, MonitorCog, Save, Search, Sparkles, Unplug} from 'lucide-react';
 import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest} from '../types';
+import {isExtensionOutdated, latestExtensionVersion} from '../browser/extensionVersion';
 
 interface Props {
   settings: AppSettings;
@@ -84,6 +85,9 @@ export const NewResearch = ({
   const chromeReady = chromeStatus?.state === 'connected'
     && chromeStatus.connected
     && chromeStatus.loginState === 'logged_in';
+  // 'not_ready' means the extension never answered, so there is no installed version to compare.
+  const extensionOutdated = browserRuntime && chromeStatus !== undefined && chromeStatus.state !== 'not_ready'
+    && isExtensionOutdated(chromeStatus.extensionVersion);
   // A valid account stays signed in when the server's AI service is unavailable.
   const analysisUnavailable = settings.analysis?.transport === 'proxy' && Boolean(settings.analysis.account)
     && !settings.analysis.loginRequired && !settings.analysis.aiConfigured;
@@ -307,6 +311,10 @@ export const NewResearch = ({
             {chromeReady ? <CircleCheck size={17}/> : chromeTransitioning ? <LoaderCircle className="spin" size={17}/> : <CircleAlert size={17}/>}
             <span>{chromeStatus?.message ?? '正在检测 Chrome…'}</span>
           </p>
+          {extensionOutdated && <p className="chrome-connect-status warning" role="alert">
+            <CircleAlert size={17}/>
+            <span>{chromeStatus?.extensionVersion ? `当前扩展 ${chromeStatus.extensionVersion} 不是最新版本` : '无法确认当前扩展版本'}，最新版本为 {latestExtensionVersion}。请打开图文教程下载新版，替换原扩展文件夹内容，在 Chrome 扩展管理页点击“重新加载”后刷新此页面。</span>
+          </p>}
           <div className="chrome-connect-actions">
             <button className="chrome-settings-button" type="button" disabled={chromeTransitioning} onClick={() => void onConnectChrome()}>
               {chromeTransitioning ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {chromeStatus?.state === 'disconnecting' ? '正在断开 Chrome…' : connectingChrome || chromeStatus?.state === 'connecting' ? '等待 Chrome 授权…' : chromeActionLabel}
