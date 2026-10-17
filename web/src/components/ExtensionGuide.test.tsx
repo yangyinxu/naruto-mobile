@@ -14,7 +14,7 @@ describe('ExtensionGuide', () => {
     expect(screen.getByText(new RegExp(`当前版本 ${latestExtensionVersion}`))).toBeVisible();
     expect(screen.getByText(/后台评论仍未加载时/)).toBeVisible();
     expect(screen.getByText(/采集会新开一个独立 Chrome 窗口/)).toBeVisible();
-    expect(screen.getByText(/橙色“火影调查”标签页组/)).toBeVisible();
+    expect(screen.getByText(/不再创建标签页组/)).toBeVisible();
     expect(screen.queryByText(/remote-debugging/)).not.toBeInTheDocument();
   });
   it('reports extension connection failure instead of claiming readiness', async () => {

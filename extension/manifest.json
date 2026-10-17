@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Naruto Mobile local collector",
-  "version": "0.1.9",
+  "version": "0.1.12",
   "description": "Collect public Bilibili feedback in your own browser for the Naruto research portal.",
   "minimum_chrome_version": "120",
-  "permissions": ["tabs", "tabGroups", "scripting", "storage"],
+  "permissions": ["tabs", "scripting", "storage"],
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://search.bilibili.com/*",
