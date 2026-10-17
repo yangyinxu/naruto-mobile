@@ -142,7 +142,7 @@ This is a required collaboration workflow, not an installed CI automation.
 For development, start Archtree locally on port 8080 and run:
 
 ```powershell
-npm run dev:web -- --mode hosted
+npm run dev:web:hosted
 ```
 
 Open `http://127.0.0.1:5173/naruto/`; the extension supports local HTTP portals

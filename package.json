@@ -19,6 +19,7 @@
     "smoke:extension": "node scripts/smoke-browser-extension.mjs",
     "dev": "tsx watch src/server.ts",
     "dev:web": "npm run dev --workspace @naruto-mobile/web",
+    "dev:web:hosted": "npm run dev:hosted --workspace @naruto-mobile/web",
     "start": "tsx src/server.ts",
     "test": "npm run catalog:check && npm run test:server && npm run test:web",
     "catalog:check": "node scripts/build-catalogs.mjs --check",

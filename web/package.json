@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:hosted": "vite --mode hosted",
     "build": "tsc -p tsconfig.json && vite build",
     "build:hosted": "tsc -p tsconfig.json && vite build --mode hosted",
     "test": "vitest run"
