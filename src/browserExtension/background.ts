@@ -1,5 +1,6 @@
 import type {CandidateContent, ContentRecord, OpinionRecord, RunCheckpoint} from '../domain/types';
-import {CHANNEL, collectionInput, contentUrl, isBilibiliUrl, isExtensionRequest, isPortalUrl, searchUrls, stableBrowserId, type CollectionInput} from './protocol';
+import {inContentWindow, parseBilibiliDate} from '../domain/publishedDate';
+import {CHANNEL, collectionInput, contentId, contentUrl, isBilibiliUrl, isExtensionRequest, isPortalUrl, searchUrls, stableBrowserId, type CollectionInput} from './protocol';
 import {readContentPage, readLoginPage, readSearchPage, type ContentSnapshot} from './pageScripts';
 
 interface Tab {id?: number; url?: string; pendingUrl?: string; status?: string; windowId?: number; groupId?: number; active?: boolean}
@@ -95,7 +96,7 @@ function samePlacement(tab: Tab, expected: OwnedTab) {
 /** Page-added tracking may change a public content URL without changing its source identity. */
 function ownedUrlMatches(expected: string, observed: string | undefined) {
   return observed === expected || (typeof observed === 'string'
-    && Boolean(contentUrl(expected, 'video') || contentUrl(expected, 'dynamic'))
+    && Boolean(contentUrl(expected, 'video') || contentUrl(expected, 'dynamic') || contentUrl(expected, 'article'))
     && navigationTargetMatches(expected, observed));
 }
 function ownsDocument(tab: Tab, expected: OwnedTab) {
@@ -172,8 +173,8 @@ async function connectionSummary(value: Account) {
 
 function status() {
   return {state: connected ? 'connected' : 'ready', remoteDebuggingEnabled: false, connected,
-    ...account, extensionVersion: '0.1.8', commentReadiness: 1, isolatedCollectionWindow: 1, activeInvestigations: active ? 1 : 0,
-    message: connected ? '浏览器扩展 0.1.8 已连接，将在当前电脑采集公开意见。' : '浏览器扩展 0.1.8 已就绪，请登录 B站后点击连接浏览器扩展。'};
+    ...account, extensionVersion: '0.1.9', commentReadiness: 1, isolatedCollectionWindow: 1, contentWindowEnforced: 1, activeInvestigations: active ? 1 : 0,
+    message: connected ? '浏览器扩展 0.1.9 已连接，将在当前电脑采集公开意见。' : '浏览器扩展 0.1.9 已就绪，请登录 B站后点击连接浏览器扩展。'};
 }
 function event(job: Job, type: string, payload: unknown) {
   if (job.disconnected) return;
@@ -252,6 +253,9 @@ function navigationTargetMatches(requested: string, observed: string) {
     const redirected = contentUrl(observed, 'dynamic');
     return Boolean(redirected && dynamic.match(/\/(\d+)$/)?.[1] === redirected.match(/\/(\d+)$/)?.[1]);
   }
+  const article = contentUrl(requested, 'article');
+  // Bilibili may serve a 专栏 article through its opus reader under a different numeric ID.
+  if (article) return contentUrl(observed, 'article') === article || Boolean(new URL(observed).hostname === 'www.bilibili.com' && contentUrl(observed, 'dynamic'));
   const target = new URL(requested), final = new URL(observed);
   target.searchParams.sort();
   final.searchParams.sort();
@@ -350,75 +354,70 @@ async function checkLogin(): Promise<Account> {
     return decodeAccount(result);
   } finally { await closeOwned(id); }
 }
-function dateFromText(value: string) {
-  const full = value.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
-  if (full) return new Date(Date.UTC(Number(full[1]), Number(full[2]) - 1, Number(full[3]))).toISOString();
-  const short = value.match(/(?:^|\s)(\d{1,2})[-/.](\d{1,2})(?:\s|$)/);
-  if (!short) return undefined;
-  const now = new Date();
-  let date = new Date(Date.UTC(now.getUTCFullYear(), Number(short[1]) - 1, Number(short[2])));
-  if (date.getTime() > now.getTime() + 86_400_000) date = new Date(Date.UTC(now.getUTCFullYear() - 1, Number(short[1]) - 1, Number(short[2])));
-  return date.toISOString();
-}
-function commentTime(value: string | undefined, collectedAt: string) {
-  if (!value) return undefined;
-  const relative = value.match(/(\d+)\s*(秒|分钟|小时|天)前/);
-  if (relative) return new Date(Date.parse(collectedAt) - Number(relative[1]) * ({秒: 1000, 分钟: 60_000, 小时: 3_600_000, 天: 86_400_000}[relative[2]] || 0)).toISOString();
-  if (/刚刚/.test(value)) return collectedAt;
-  const full = value.match(/(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
-  // Bilibili's displayed clock is China Standard Time, independent of visitor timezone.
-  if (full) return new Date(Date.UTC(Number(full[1]), Number(full[2]) - 1, Number(full[3]), Number(full[4] || 0) - 8, Number(full[5] || 0))).toISOString();
-  const short = value.match(/(?:^|\s)(\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
-  if (!short) return undefined;
-  const year = new Date(Date.parse(collectedAt) + 8 * 3_600_000).getUTCFullYear();
-  let date = new Date(Date.UTC(year, Number(short[1]) - 1, Number(short[2]), Number(short[3] || 0) - 8, Number(short[4] || 0)));
-  if (date.getTime() > Date.parse(collectedAt) + 86_400_000) date = new Date(Date.UTC(year - 1, Number(short[1]) - 1, Number(short[2]), Number(short[3] || 0) - 8, Number(short[4] || 0)));
-  return date.toISOString();
-}
+type SearchLink = {href: string; title: string; context: string; dateText?: string};
 async function discover(job: Job, tabId: number) {
-  event(job, 'state', {state: 'discovering', message: '正在发现热门视频和动态…'});
+  event(job, 'state', {state: 'discovering', message: '正在发现热门视频和专栏…'});
+  const {maxSources, contentWindowDays} = job.manifest.request;
   const seen = new Set(job.checkpoint.seenContentIds);
   const candidates = [...new Map(job.checkpoint.pendingCandidates
     .filter((candidate) => !seen.has(candidate.id)).map((candidate) => [candidate.id, candidate])).values()]
-    .slice(0, Math.max(0, job.manifest.request.maxSources - seen.size));
+    .slice(0, Math.max(0, maxSources - seen.size));
   for (const candidate of candidates) seen.add(candidate.id);
   // Re-running discovery is idempotent and completes searches interrupted by a
   // pause. Commit the merged pending set before any content worker can claim it.
   job.checkpoint.pendingCandidates = [...candidates];
   event(job, 'candidates', structuredClone(candidates));
   checkpoint(job);
-  const cutoff = Date.now() - job.manifest.request.contentWindowDays * 86_400_000;
+  const full = () => job.checkpoint.seenContentIds.length + candidates.length >= maxSources;
+  const targets = searchUrls(job.manifest.request);
+  // Each search first gets an equal share of the open slots so videos cannot crowd
+  // out 专栏 articles; a second pass fills any remainder from the pages already read.
+  const share = Math.ceil(Math.max(0, maxSources - job.checkpoint.seenContentIds.length - candidates.length) / Math.max(1, targets.length));
+  const unused: Array<{target: typeof targets[number]; links: SearchLink[]}> = [];
+  const take = (target: typeof targets[number], links: SearchLink[], limit: number) => {
+    let taken = 0;
+    let index = 0;
+    for (; index < links.length && taken < limit && !full(); index += 1) {
+      const link = links[index];
+      if (!link || typeof link.href !== 'string' || typeof link.title !== 'string' || typeof link.context !== 'string') continue;
+      const url = contentUrl(link.href, target.type);
+      const id = url && contentId(url, target.type);
+      if (!url || !id || seen.has(id)) continue;
+      const publishedAt = parseBilibiliDate(typeof link.dateText === 'string' ? link.dateText : link.context);
+      // Search filters are not authoritative; a dated result outside the window is never queued.
+      if (publishedAt && !inContentWindow(publishedAt, contentWindowDays, {dayPrecision: true})) continue;
+      seen.add(id);
+      taken += 1;
+      candidates.push({id, type: target.type, url, discoveryUrl: target.url, title: link.title.slice(0, 2000) || id,
+        discoveryKeyword: target.keyword, discoveryRank: job.checkpoint.seenContentIds.length + candidates.length + 1, popularityText: link.context.slice(0, 500), publishedAt});
+    }
+    return links.slice(index);
+  };
+  const commitDiscovered = () => {
+    // Commit discovery incrementally so a pause never discards already found sources.
+    job.checkpoint.pendingCandidates = [...candidates];
+    event(job, 'candidates', structuredClone(candidates));
+    checkpoint(job);
+  };
   let successfulSearches = 0;
   let attemptedSearches = 0;
-  for (const target of searchUrls(job.manifest.request)) {
-    if (job.directive !== 'continue' || remaining(job) < 20_000) break;
-    if (job.checkpoint.seenContentIds.length + candidates.length >= job.manifest.request.maxSources) break;
+  for (const target of targets) {
+    if (job.directive !== 'continue' || remaining(job) < 20_000 || full()) break;
     try {
       attemptedSearches += 1;
       await navigate(tabId, target.url);
-      const links = await execute<Array<{href: string; title: string; context: string}>>(tabId, readSearchPage as (...args: never[]) => unknown, [target.type]);
+      const links = await execute<SearchLink[]>(tabId, readSearchPage as (...args: never[]) => unknown, [target.type]);
       if (!Array.isArray(links) || links.length > 400) throw new Error('搜索结果格式不正确。');
       successfulSearches += 1;
-      for (const link of links) {
-        if (!link || typeof link.href !== 'string' || typeof link.title !== 'string' || typeof link.context !== 'string') continue;
-        const url = contentUrl(link.href, target.type);
-        const id = url?.match(target.type === 'video' ? /\/video\/(BV[\w]+)/ : /\/(\d{6,})$/)?.[1];
-        if (!url || !id || seen.has(id)) continue;
-        const publishedAt = dateFromText(link.context);
-        if (publishedAt && Date.parse(publishedAt) < cutoff) continue;
-        seen.add(id);
-        candidates.push({id, type: target.type, url, discoveryUrl: target.url, title: link.title.slice(0, 2000) || id,
-          discoveryKeyword: target.keyword, discoveryRank: job.checkpoint.seenContentIds.length + candidates.length + 1, popularityText: link.context.slice(0, 500), publishedAt});
-        if (job.checkpoint.seenContentIds.length + candidates.length >= job.manifest.request.maxSources) break;
-      }
-      // Commit discovery incrementally so a pause never discards already found sources.
-      job.checkpoint.pendingCandidates = [...candidates];
-      event(job, 'candidates', structuredClone(candidates));
-      checkpoint(job);
-      if (job.checkpoint.seenContentIds.length + candidates.length >= job.manifest.request.maxSources) break;
+      unused.push({target, links: take(target, links, share)});
+      commitDiscovered();
     } catch {
       event(job, 'warning', {message: '一个 B站搜索页面无法读取，已保留进度并继续其他搜索。'});
     }
+  }
+  if (!full() && unused.some((item) => item.links.length)) {
+    for (const item of unused) take(item.target, item.links, maxSources);
+    commitDiscovered();
   }
   if (attemptedSearches && !successfulSearches && !candidates.length && job.directive === 'continue'
     && remaining(job) >= 20_000) throw new Error('搜索暂时不可用，请稍后继续采集。');
@@ -495,7 +494,13 @@ async function content(job: Job, tabId: number, candidate: CandidateContent) {
     throw new ContentReadError(snapshot.commentState);
   }
   const collectedAt = new Date().toISOString();
-  const publishedAt = snapshot.publishedAt && Number.isFinite(Date.parse(snapshot.publishedAt)) ? new Date(snapshot.publishedAt).toISOString() : candidate.publishedAt;
+  const epoch = snapshot.publishedAtEpochSeconds;
+  const exactPublishedAt = typeof epoch === 'number' && Number.isFinite(epoch) && epoch > 0 && epoch < 10_000_000_000
+    ? new Date(epoch * 1000).toISOString()
+    : snapshot.publishedAt && Number.isFinite(Date.parse(snapshot.publishedAt)) ? new Date(snapshot.publishedAt).toISOString() : undefined;
+  const publishedAt = exactPublishedAt
+    || parseBilibiliDate(typeof snapshot.publishedAtText === 'string' ? snapshot.publishedAtText : undefined, Date.parse(collectedAt))
+    || candidate.publishedAt;
   const record: ContentRecord = {...candidate, recordSchemaVersion: 2, runId: job.manifest.id,
     title: snapshot.title || candidate.title, description: snapshot.description, publishedAt, collectedAt,
     resolvedUrl: snapshot.resolvedUrl, metrics: {}};
@@ -520,9 +525,9 @@ async function content(job: Job, tabId: number, candidate: CandidateContent) {
       url.searchParams.set('comment_root_id', parentSourceRecordId || sourceRecordId);
       if (parentSourceRecordId && parentSourceRecordId !== sourceRecordId) url.searchParams.set('comment_secondary_id', sourceRecordId);
     }
-    const epoch = item.publishedAtEpochSeconds;
-    const opinionDate = typeof epoch === 'number' && Number.isFinite(epoch) && epoch > 0 && epoch < 10_000_000_000
-      ? new Date(epoch * 1000).toISOString() : commentTime(item.publishedAtText, collectedAt);
+    const commentEpoch = item.publishedAtEpochSeconds;
+    const opinionDate = typeof commentEpoch === 'number' && Number.isFinite(commentEpoch) && commentEpoch > 0 && commentEpoch < 10_000_000_000
+      ? new Date(commentEpoch * 1000).toISOString() : parseBilibiliDate(item.publishedAtText, Date.parse(collectedAt));
     opinions.push({id: await stableBrowserId(candidate.id, sourceType, sourceRecordId || authorUid || authorName || 'anonymous', ...(sourceRecordId ? [] : [item.text])),
       recordSchemaVersion: 2, runId: job.manifest.id, contentId: candidate.id, contentType: candidate.type,
       sourceType, voiceType: 'viewer', text: item.text, publishedAt: opinionDate,
@@ -532,7 +537,7 @@ async function content(job: Job, tabId: number, candidate: CandidateContent) {
     acceptedViewerOpinions += 1;
   }
   if (snapshot.commentState === 'loaded' && acceptedViewerOpinions === 0) throw new ContentReadError('no_valid_comments', 'comments');
-  return {record, opinions, commentState: snapshot.commentState};
+  return {record, opinions, commentState: snapshot.commentState, dayPrecision: !exactPublishedAt};
 }
 async function collect(job: Job) {
   let commitQueue = Promise.resolve();
@@ -558,7 +563,13 @@ async function collect(job: Job) {
           event(job, 'warning', {message: collectionWarningMessages[reason], details: {contentId: candidate.id, stage, reason}});
         }
         const commit = commitQueue.then(() => {
-          const eligible = collected && (!collected.record.publishedAt || Date.parse(collected.record.publishedAt) >= Date.now() - job.manifest.request.contentWindowDays * 86_400_000);
+          // A source without a confirmed publish time is never treated as recent.
+          const eligible = collected && inContentWindow(collected.record.publishedAt, job.manifest.request.contentWindowDays,
+            {dayPrecision: collected.dayPrecision});
+          if (collected && !collected.record.publishedAt) event(job, 'warning', {
+            message: '无法确认该来源的发布时间，已跳过以保证只采集内容范围内的来源。',
+            details: {contentId: candidate.id}
+          });
           if (collected && eligible) {
             event(job, 'content', collected.record);
             for (const opinion of collected.opinions) if (!job.checkpoint.seenOpinionIds.includes(opinion.id)) {

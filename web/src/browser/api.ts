@@ -8,7 +8,7 @@ import {object, text} from './validation';
 
 const defaultKeywords = ['火影忍者手游'];
 const defaults: AppSettings['defaults'] = {durationMinutes: 5, contentWindowDays: 30, keywords: defaultKeywords,
-  includeVideos: true, includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4,
+  includeVideos: true, includeArticles: true, mode: 'live', browserVisible: true, browserWindowCount: 4,
   maxSources: 20, useKeywordPrefix: true};
 let singleton: BrowserResearchRuntime | undefined;
 

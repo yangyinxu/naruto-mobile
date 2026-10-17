@@ -9,7 +9,7 @@ const run: RunManifest = {
   state: 'completed',
   request: {
     name: '完整记录测试', durationMinutes: 5, contentWindowDays: 30,
-    keywords: ['火影忍者手游'], includeVideos: true, includeDynamics: false,
+    keywords: ['火影忍者手游'], includeVideos: true, includeArticles: false,
     mode: 'live', browserVisible: true, browserWindowCount: 1, maxSources: 20
   },
   createdAt: '2026-08-27T12:00:00.000Z', updatedAt: '2026-08-27T12:05:00.000Z',

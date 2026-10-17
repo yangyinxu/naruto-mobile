@@ -94,7 +94,7 @@ export const createApp = (
       contentWindowDays: 30,
       ...keywordSettings,
       includeVideos: true,
-      includeDynamics: true,
+      includeArticles: true,
       mode: 'live',
       browserVisible: true,
       browserWindowCount: 4,

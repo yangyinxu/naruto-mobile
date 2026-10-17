@@ -1,4 +1,4 @@
-import type {CandidateContent, ResearchRequest, RunCheckpoint} from '../domain/types';
+import type {CandidateContent, ContentType, ResearchRequest, RunCheckpoint} from '../domain/types';
 import {normalizeResearchRequest} from '../domain/validation';
 
 export const CHANNEL = 'naruto-extension-v1';
@@ -37,7 +37,7 @@ export function isExtensionRequest(value: unknown): value is ExtensionRequest {
 }
 
 /** Content navigation accepts canonical public content links, never an arbitrary URL. */
-export function contentUrl(value: string, type: 'video' | 'dynamic'): string | undefined {
+export function contentUrl(value: string, type: ContentType): string | undefined {
   try {
     const url = new URL(value, 'https://www.bilibili.com');
     if (url.protocol !== 'https:' || url.username || url.password || url.port) return undefined;
@@ -49,6 +49,10 @@ export function contentUrl(value: string, type: 'video' | 'dynamic'): string | u
       const id = url.hostname === 'www.bilibili.com' ? url.pathname.match(/^\/opus\/(\d{6,})\/?$/)?.[1]
         : url.hostname === 't.bilibili.com' ? url.pathname.match(/^\/(\d{6,})\/?$/)?.[1] : undefined;
       return id ? `https://${url.hostname}/${url.hostname === 'www.bilibili.com' ? 'opus/' : ''}${id}` : undefined;
+    }
+    if (type === 'article' && url.hostname === 'www.bilibili.com') {
+      const id = url.pathname.match(/^\/read\/cv(\d{1,20})\/?$/)?.[1];
+      return id ? `https://www.bilibili.com/read/cv${id}` : undefined;
     }
   } catch { /* Reject malformed links from untrusted pages. */ }
   return undefined;
@@ -62,13 +66,22 @@ export function isBilibiliUrl(value: string): boolean {
   } catch { return false; }
 }
 
+/** The canonical source ID used for deduplication and checkpoint validation. */
+export function contentId(url: string, type: ContentType): string | undefined {
+  if (type === 'video') return url.match(/\/video\/(BV[\w]+)/)?.[1];
+  if (type === 'article') return url.match(/\/read\/(cv\d+)$/)?.[1];
+  return url.match(/\/(\d{6,})$/)?.[1];
+}
+
+/** Bilibili has no dynamic search page; article search ignores the pubtime filter, so it sorts newest first. */
 export function searchUrls(request: ResearchRequest, now = Date.now()) {
   const end = Math.floor(now / 1000);
   return request.keywords.flatMap((keyword) => {
-    const query = `keyword=${encodeURIComponent(keyword)}&pubtime_begin_s=${end - request.contentWindowDays * 86400}&pubtime_end_s=${end}`;
+    const encoded = `keyword=${encodeURIComponent(keyword)}`;
+    const window = `pubtime_begin_s=${end - request.contentWindowDays * 86400}&pubtime_end_s=${end}`;
     return [
-      ...(request.includeVideos ? [{type: 'video' as const, keyword, url: `https://search.bilibili.com/video?${query}&order=click`}] : []),
-      ...(request.includeDynamics ? [{type: 'dynamic' as const, keyword, url: `https://search.bilibili.com/dynamic?${query}`}] : [])
+      ...(request.includeVideos ? [{type: 'video' as const, keyword, url: `https://search.bilibili.com/video?${encoded}&${window}&order=click`}] : []),
+      ...(request.includeArticles ? [{type: 'article' as const, keyword, url: `https://search.bilibili.com/article?${encoded}&order=pubdate`}] : [])
     ];
   });
 }
@@ -106,9 +119,9 @@ export function collectionInput(value: unknown): CollectionInput {
   const pendingCandidates = checkpoint.pendingCandidates.map((value): CandidateContent => {
     const candidate = object(value);
     const type = candidate.type;
-    if (type !== 'video' && type !== 'dynamic') throw new Error('候选来源格式不正确。');
+    if (type !== 'video' && type !== 'dynamic' && type !== 'article') throw new Error('候选来源格式不正确。');
     const url = typeof candidate.url === 'string' ? contentUrl(candidate.url, type) : undefined;
-    const canonicalId = url?.match(type === 'video' ? /\/video\/(BV[\w]+)/ : /\/(\d{6,})$/)?.[1];
+    const canonicalId = url ? contentId(url, type) : undefined;
     if (!url || candidate.id !== canonicalId || typeof candidate.title !== 'string' || candidate.title.length > 2000
       || typeof candidate.discoveryKeyword !== 'string' || !request.keywords.includes(candidate.discoveryKeyword)
       || typeof candidate.discoveryRank !== 'number' || !Number.isSafeInteger(candidate.discoveryRank) || candidate.discoveryRank < 1

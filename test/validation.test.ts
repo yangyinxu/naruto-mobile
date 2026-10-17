@@ -14,7 +14,7 @@ test('normalizes the beginner defaults and deduplicates keywords', () => {
 });
 
 test('rejects empty sources and unsafe time bounds', () => {
-  assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], includeVideos: false, includeDynamics: false}), RequestValidationError);
+  assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], includeVideos: false, includeArticles: false}), RequestValidationError);
   assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], durationMinutes: 0}), /采集时间/);
   assert.throws(() => normalizeResearchRequest({keywords: ['火影手游'], browserWindowCount: 9}), /并行窗口数/);
 });

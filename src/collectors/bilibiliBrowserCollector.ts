@@ -11,11 +11,13 @@ import {
   OpinionRecord
 } from '../domain/types';
 import {contentIdFromUrl, delay, normalizedUrl, stableId} from './collectorUtils';
+import {inContentWindow, parseBilibiliDate} from '../domain/publishedDate';
 
+/** Bilibili has no dynamic search page; article search ignores the pubtime filter, so it sorts newest first. */
 const searchUrls = (
   keyword: string,
   includeVideos: boolean,
-  includeDynamics: boolean,
+  includeArticles: boolean,
   contentWindowDays: number
 ) => {
   const encoded = encodeURIComponent(keyword);
@@ -24,29 +26,11 @@ const searchUrls = (
   const timeFilter = `&pubtime_begin_s=${beginSeconds}&pubtime_end_s=${endSeconds}`;
   const urls: Array<{type: ContentType; url: string}> = [];
   if (includeVideos) urls.push({type: 'video', url: `https://search.bilibili.com/video?keyword=${encoded}&order=click${timeFilter}`});
-  if (includeDynamics) urls.push({type: 'dynamic', url: `https://search.bilibili.com/dynamic?keyword=${encoded}${timeFilter}`});
+  if (includeArticles) urls.push({type: 'article', url: `https://search.bilibili.com/article?keyword=${encoded}&order=pubdate`});
   return urls;
 };
 
-const discoveredDate = (text: string) => {
-  const fullDate = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
-  if (fullDate) {
-    const parsed = new Date(Date.UTC(Number(fullDate[1]), Number(fullDate[2]) - 1, Number(fullDate[3])));
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-  }
-  const shortDate = text.match(/(?:^|\s)(\d{1,2})[-/.](\d{1,2})(?:\s|$)/);
-  if (shortDate) {
-    const now = new Date();
-    let year = now.getUTCFullYear();
-    let parsed = new Date(Date.UTC(year, Number(shortDate[1]) - 1, Number(shortDate[2])));
-    if (parsed.getTime() > now.getTime() + 86400000) {
-      year -= 1;
-      parsed = new Date(Date.UTC(year, Number(shortDate[1]) - 1, Number(shortDate[2])));
-    }
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-  }
-  return undefined;
-};
+const contentLabel = {video: '视频', article: '专栏', dynamic: '动态'} as const;
 
 const outcomeForDirective = (
   directive: ReturnType<CollectionContext['callbacks']['getDirective']>
@@ -62,6 +46,34 @@ const metadata = async (page: Page, selector: string, attribute = 'content') => 
     return (await page.locator(selector).first().getAttribute(attribute))?.trim() || '';
   } catch {
     return '';
+  }
+};
+
+/**
+ * Reads the page's own publish time: videoData.pubdate, 专栏 readInfo.publish_time,
+ * opus module_author.pub_ts or publish metadata; the displayed label is a fallback.
+ */
+const pagePublishedAt = async (page: Page): Promise<string | undefined> => {
+  try {
+    const found = await page.evaluate(() => {
+      const state = (window as unknown as {__INITIAL_STATE__?: Record<string, unknown>}).__INITIAL_STATE__ || {};
+      const field = (value: unknown, key: string) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+      const modules = field(field(state, 'detail'), 'modules');
+      const opusAuthor = Array.isArray(modules) ? modules.map((item) => field(item, 'module_author')).find(Boolean) : undefined;
+      const epoch = [field(field(state, 'videoData'), 'pubdate'), field(field(state, 'readInfo'), 'publish_time'),
+        field(field(state, 'readInfo'), 'ctime'), field(opusAuthor, 'pub_ts')]
+        .map(Number).find((value) => Number.isFinite(value) && value > 1_000_000_000 && value < 10_000_000_000);
+      const meta = ['meta[property="video:release_date"]', 'meta[itemprop="datePublished"]', 'meta[itemprop="uploadDate"]',
+        'meta[property="article:published_time"]'].map((selector) => document.querySelector(selector)?.getAttribute('content')?.trim()).find(Boolean);
+      const label = ['.pubdate-ip-text', '.pubdate-text', '.publish-text', '.opus-module-author__pub__text', '.opus-module-author__pub']
+        .map((selector) => document.querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim()).find(Boolean);
+      return {epoch, meta, label};
+    });
+    if (found.epoch) return new Date(found.epoch * 1000).toISOString();
+    if (found.meta && Number.isFinite(Date.parse(found.meta))) return new Date(found.meta).toISOString();
+    return parseBilibiliDate(found.label);
+  } catch {
+    return undefined;
   }
 };
 
@@ -385,37 +397,39 @@ export class BilibiliBrowserCollector implements Collector {
     const candidates: CandidateContent[] = [];
     let rank = 0;
     for (const keyword of request.keywords) {
-      for (const target of searchUrls(keyword, request.includeVideos, request.includeDynamics, request.contentWindowDays)) {
+      for (const target of searchUrls(keyword, request.includeVideos, request.includeArticles, request.contentWindowDays)) {
         if (context.callbacks.getDirective() !== 'continue' || context.callbacks.remainingMs() < 20_000) break;
         try {
           await page.goto(target.url, {waitUntil: 'domcontentloaded', timeout: 20_000});
           await delay(800);
-          const selector = target.type === 'video'
-            ? 'a[href*="/video/BV"]'
-            : 'a[href*="/opus/"], a[href*="t.bilibili.com/"]';
+          const selector = target.type === 'video' ? 'a[href*="/video/BV"]' : 'a[href*="/read/cv"]';
           const links = await page.locator(selector).evaluateAll((anchors) => anchors.map((anchor) => {
             const element = anchor as HTMLAnchorElement;
-            const container = element.closest('div');
+            // A whole result card holds the title, author and "· 9月29日" publish label.
+            const container = element.closest('.bili-video-card, .b-article-card, .video-list-item') || element.closest('div');
+            const context = (container?.textContent || '').replace(/\s+/g, ' ').trim();
+            const heading = container?.querySelector('[title], h2, h3');
             return {
               href: element.href,
-              title: element.getAttribute('title') || element.textContent || '',
-              context: container?.textContent?.slice(0, 300) || ''
+              title: element.getAttribute('title') || element.textContent?.trim() || heading?.getAttribute('title') || heading?.textContent || '',
+              context: context.slice(0, 300),
+              dateText: (container?.querySelector('.bili-video-card__info--date')?.textContent || context.split('·').pop() || '').trim()
             };
           }));
           for (const link of links) {
             const url = normalizedUrl(link.href);
             const id = contentIdFromUrl(url, target.type);
             if (candidates.some((item) => item.id === id) || context.checkpoint.seenContentIds.includes(id)) continue;
-            const publishedAt = discoveredDate(link.context);
-            const cutoff = Date.now() - request.contentWindowDays * 86400000;
-            if (publishedAt && new Date(publishedAt).getTime() < cutoff) continue;
+            const publishedAt = parseBilibiliDate(link.dateText);
+            // Search filters are not authoritative; a dated result outside the window is never queued.
+            if (publishedAt && !inContentWindow(publishedAt, request.contentWindowDays, {dayPrecision: true})) continue;
             rank += 1;
             candidates.push({
               id,
               type: target.type,
               url,
               discoveryUrl: target.url,
-              title: link.title.replace(/\s+/g, ' ').trim() || `${target.type === 'video' ? '视频' : '动态'} ${id}`,
+              title: link.title.replace(/\s+/g, ' ').trim() || `${contentLabel[target.type]} ${id}`,
               discoveryKeyword: keyword,
               discoveryRank: rank,
               popularityText: link.context.replace(/\s+/g, ' ').trim(),
@@ -437,6 +451,7 @@ export class BilibiliBrowserCollector implements Collector {
   private async collectCandidate(page: Page, candidate: CandidateContent, runId: string): Promise<{
     content: ContentRecord;
     opinions: OpinionRecord[];
+    dayPrecision: boolean;
   }> {
     await page.goto(candidate.url, {waitUntil: 'domcontentloaded', timeout: 20_000});
     await delay(700);
@@ -445,10 +460,8 @@ export class BilibiliBrowserCollector implements Collector {
       || (await page.title()).replace(/_哔哩哔哩.*$/, '').trim()
       || candidate.title).replace(/_(?:游戏热门视频|哔哩哔哩.*)$/i, '').trim();
     const description = await metadata(page, 'meta[property="og:description"]');
-    const publishedAt = (await metadata(page, 'meta[itemprop="datePublished"]'))
-      || (await metadata(page, 'meta[property="article:published_time"]'))
-      || candidate.publishedAt
-      || undefined;
+    const pagePublished = await pagePublishedAt(page);
+    const publishedAt = pagePublished || candidate.publishedAt || undefined;
     const content: ContentRecord = {
       ...candidate,
       runId,
@@ -506,7 +519,7 @@ export class BilibiliBrowserCollector implements Collector {
         sourceUrl: commentSourceUrl(candidate.url, item.sourceRecordId, item.parentSourceRecordId, item.sourceUrl)
       });
     });
-    return {content, opinions};
+    return {content, opinions, dayPrecision: !pagePublished};
   }
 
   async collect(context: CollectionContext): Promise<CollectionResult> {
@@ -561,7 +574,6 @@ export class BilibiliBrowserCollector implements Collector {
         collected?: Awaited<ReturnType<BilibiliBrowserCollector['collectCandidate']>>,
         collectionError?: unknown
       ) => commit(async () => {
-        const cutoff = Date.now() - context.manifest.request.contentWindowDays * 86400000;
         if (collectionError) {
           await context.callbacks.onWarning('某个内容页面采集失败，已保存进度并继续。', {
             contentId: candidate.id,
@@ -569,10 +581,14 @@ export class BilibiliBrowserCollector implements Collector {
             error: collectionError instanceof Error ? collectionError.message : String(collectionError)
           });
         } else if (collected) {
-          const publishedTime = collected.content.publishedAt
-            ? new Date(collected.content.publishedAt).getTime()
-            : Number.NaN;
-          if (Number.isNaN(publishedTime) || publishedTime >= cutoff) {
+          // A source without a confirmed publish time is never treated as recent.
+          if (!collected.content.publishedAt) {
+            await context.callbacks.onWarning('无法确认该来源的发布时间，已跳过以保证只采集内容范围内的来源。', {
+              contentId: candidate.id,
+              url: candidate.url
+            });
+          } else if (inContentWindow(collected.content.publishedAt, context.manifest.request.contentWindowDays,
+            {dayPrecision: collected.dayPrecision})) {
             await context.callbacks.onContent(collected.content);
             if (collected.opinions.length === 1) {
               await context.callbacks.onWarning('该页面没有加载出可见评论，已保留内容元数据并继续。', {
@@ -599,8 +615,8 @@ export class BilibiliBrowserCollector implements Collector {
         while (true) {
           const candidate = claimCandidate();
           if (!candidate) return;
-          const cutoff = Date.now() - context.manifest.request.contentWindowDays * 86400000;
-          if (candidate.publishedAt && new Date(candidate.publishedAt).getTime() < cutoff) {
+          if (candidate.publishedAt && !inContentWindow(candidate.publishedAt, context.manifest.request.contentWindowDays,
+            {dayPrecision: true})) {
             await completeCandidate(candidate);
             continue;
           }

@@ -16,7 +16,7 @@ const request: ResearchRequest = {
   contentWindowDays: 30,
   keywords: ['火影忍者手游'],
   includeVideos: true,
-  includeDynamics: false,
+  includeArticles: false,
   mode: 'demo',
   browserVisible: false,
   browserWindowCount: 1,

@@ -65,7 +65,7 @@ export interface ResearchRequest {
   contentWindowDays: number;
   keywords: string[];
   includeVideos: boolean;
-  includeDynamics: boolean;
+  includeArticles: boolean;
   mode: 'live' | 'demo';
   browserVisible: boolean;
   browserWindowCount: number;
@@ -198,7 +198,7 @@ export interface ContentRecord {
   recordSchemaVersion?: 2;
   runId?: string;
   id: string;
-  type: 'video' | 'dynamic';
+  type: 'video' | 'dynamic' | 'article';
   url: string;
   discoveryUrl?: string;
   resolvedUrl?: string;
@@ -222,7 +222,7 @@ export interface OpinionRecord {
   id: string;
   runId?: string;
   contentId: string;
-  contentType: 'video' | 'dynamic';
+  contentType: 'video' | 'dynamic' | 'article';
   sourceType: 'comment' | 'reply' | 'danmaku' | 'creator_view';
   voiceType: 'viewer' | 'creator';
   text: string;

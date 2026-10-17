@@ -14,7 +14,7 @@ it('imports an EXE ZIP into the browser and imports its browser export back into
     const source = new FileRunStore(join(directory, 'source'));
     await source.initialize();
     const run = await source.createRun({name: 'portable', durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'],
-      includeVideos: true, includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20});
+      includeVideos: true, includeArticles: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20});
     const content = {id: 'BVINTEROP001', runId: run.id, type: 'video' as const,
       url: 'https://www.bilibili.com/video/BVINTEROP001', title: '火影忍者手游测评', description: '公开来源',
       discoveryKeyword: '火影忍者手游', discoveryRank: 1, collectedAt: run.createdAt, metrics: {views: 100}};

@@ -21,6 +21,7 @@ const commentReadinessMarker = 'comment_readiness_v1';
 const requireCollectionCapabilities = (status: Record<string, unknown>) => {
   if (status.commentReadiness !== 1) throw new Error('请更新至 0.1.2 或更新版本的火影调查扩展，并在 Chrome 扩展管理页重新加载后刷新此页面。');
   if (status.isolatedCollectionWindow !== 1) throw new Error('请更新至 0.1.7 或更新版本的火影调查扩展，并重新加载扩展和刷新网页，采集将在独立窗口运行。');
+  if (status.contentWindowEnforced !== 1) throw new Error('请更新至 0.1.9 或更新版本的火影调查扩展，并重新加载扩展和刷新网页，以严格限定内容范围并采集专栏。');
 };
 type Directive = 'continue' | 'pause' | 'finalize' | 'extend';
 interface ActiveJob {

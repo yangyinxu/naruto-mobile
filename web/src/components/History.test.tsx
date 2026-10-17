@@ -12,7 +12,7 @@ const run: RunManifest = {
     contentWindowDays: 30,
     keywords: ['火影忍者手游'],
     includeVideos: true,
-    includeDynamics: false,
+    includeArticles: false,
     mode: 'live',
     browserVisible: true,
     browserWindowCount: 1,

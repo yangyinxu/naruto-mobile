@@ -175,7 +175,7 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
       {runPhase === 'analyzing' && !run.progress?.activity && <p className="count-scope-note">分析总处理统计已得到最终分类的记录，包含缓存、排除项和详析完成项；分母是清理去重后具有来源的记录。旧版进度没有保存初筛、详析与缓存分项，无法可靠还原。</p>}
 
       <section className="metric-grid">
-        <div className="metric-card"><Video/><span>已保存来源</span><strong>{run.counts.sources}</strong><small>发现 {run.counts.candidates} 个候选；上方为成功保存的独立视频或动态页面，采集失败的候选不计入。</small></div>
+        <div className="metric-card"><Video/><span>已保存来源</span><strong>{run.counts.sources}</strong><small>发现 {run.counts.candidates} 个候选；上方为成功保存的独立视频或专栏页面，采集失败的候选不计入。</small></div>
         <div className="metric-card"><MessageSquareText/><span>原始采集记录</span><strong>{run.counts.opinions}</strong><small>评论、回复、弹幕和作者观点合计；清理去重前的记录数，不是玩家人数。</small></div>
         <div className="metric-card"><FileText/><span>{run.request.mode === 'demo' ? '演示采用意见' : '报告采用的观众意见'}</span><strong>{run.reportReady ? run.counts.validOpinions : '—'}</strong><small>{run.reportReady && run.analysis ? `强洞察 ${run.analysis.strongOpinions} · 弱信号 ${run.analysis.weakOpinions} · 无参考价值 ${run.analysis.noiseOpinions}；需要复核的强洞察不自动进入报告。` : '完成分析并生成报告后显示；不会把全部详析记录当作有效意见。'}</small></div>
         <div className={`metric-card ${run.counts.warnings ? 'warning' : ''}`}><AlertTriangle/><span>采集提醒次数</span><strong>{run.counts.warnings}</strong><small>页面采集失败、未加载出评论等提醒的发生次数，不代表丢失记录数。</small></div>

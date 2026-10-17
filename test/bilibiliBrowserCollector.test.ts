@@ -53,7 +53,7 @@ test('initializes and closes the worker page pool without a temporal dead zone e
         contentWindowDays: 7,
         keywords: ['火影忍者手游'],
         includeVideos: true,
-        includeDynamics: false,
+        includeArticles: false,
         mode: 'live',
         browserVisible: true,
         browserWindowCount: 1,

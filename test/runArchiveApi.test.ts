@@ -13,7 +13,7 @@ import {RunManager} from '../src/services/runManager';
 
 const research: ResearchRequest = {
   name: '十月活动与新忍者调查', durationMinutes: 5, contentWindowDays: 30,
-  keywords: ['火影手游 十月活动'], includeVideos: true, includeDynamics: false,
+  keywords: ['火影手游 十月活动'], includeVideos: true, includeArticles: false,
   mode: 'demo', browserVisible: false, browserWindowCount: 4, maxSources: 10
 };
 

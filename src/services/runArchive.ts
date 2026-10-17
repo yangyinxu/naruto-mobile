@@ -147,7 +147,8 @@ const validateManifest = (value: unknown): RunManifest => {
   string(request.name, '调查名称', 80); stringArray(request.keywords, '调查关键词', 12);
   for (const key of ['durationMinutes', 'contentWindowDays', 'maxSources']) integer(request[key], key);
   optional(request, ['browserWindowCount'], integer, '调查设置');
-  for (const key of ['includeVideos', 'includeDynamics', 'browserVisible']) boolean(request[key], key);
+  for (const key of ['includeVideos', 'browserVisible']) boolean(request[key], key);
+  optional(request, ['includeArticles', 'includeDynamics'], boolean, '调查设置');
   oneOf(request.mode, ['demo', 'live'], '调查模式');
   number(request.durationMinutes, '采集时间', 1, Math.floor(Number.MAX_SAFE_INTEGER / 60_000));
   try {
@@ -180,7 +181,7 @@ const validateManifest = (value: unknown): RunManifest => {
 };
 const validateCandidate = (value: unknown, label: string) => {
   const item = object(value, label);
-  id(item.id, label); oneOf(item.type, ['video', 'dynamic'], label); url(item.url, label);
+  id(item.id, label); oneOf(item.type, ['video', 'dynamic', 'article'], label); url(item.url, label);
   string(item.title, label); string(item.discoveryKeyword, label); integer(item.discoveryRank, label);
   optional(item, ['discoveryUrl'], metadataUrl, label); optional(item, ['popularityText', 'publishedAt'], string, label);
   return item;
@@ -196,7 +197,7 @@ const validateContent = (value: unknown, label: string) => {
 const validateOpinion = (value: unknown, label: string) => {
   const item = object(value, label);
   id(item.id, label); id(item.contentId, label);
-  oneOf(item.contentType, ['video', 'dynamic'], label);
+  oneOf(item.contentType, ['video', 'dynamic', 'article'], label);
   oneOf(item.sourceType, ['comment', 'reply', 'danmaku', 'creator_view'], label);
   oneOf(item.voiceType, ['viewer', 'creator'], label);
   string(item.text, label); date(item.collectedAt, label); number(item.likes, label); number(item.replies, label);

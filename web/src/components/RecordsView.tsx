@@ -66,7 +66,7 @@ const OpinionCard = ({record, contentTitle}: {record: OpinionRecord; contentTitl
 
 const ContentCard = ({record}: {record: ContentRecord}) => (
   <article className="record-card content-record">
-    <header><div className="record-author"><strong>{record.title}</strong><span>{record.type === 'video' ? '视频' : '动态'} · {record.id}</span></div><span className="record-kind">来源</span></header>
+    <header><div className="record-author"><strong>{record.title}</strong><span>{record.type === 'video' ? '视频' : record.type === 'article' ? '专栏' : '动态'} · {record.id}</span></div><span className="record-kind">来源</span></header>
     {record.description && <p className="record-description">{record.description}</p>}
     <dl className="record-fields">
       <div><dt>发现关键词</dt><dd>{record.discoveryKeyword || '未记录'}</dd></div>

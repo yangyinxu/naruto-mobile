@@ -23,7 +23,7 @@ const opinion: OpinionRecord = {id: 'root-opinion', runId, contentId: content.id
   sourceRecordId: 'r1', likes: 20, replies: 1, sourceUrl: content.url};
 const manifest = (state: RunManifest['state'] = 'paused'): RunManifest => ({schemaVersion: 1, id: runId, state,
   request: {name: '本机调查', durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'], includeVideos: true,
-    includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20},
+    includeArticles: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20},
   createdAt: timestamp, updatedAt: timestamp, activeElapsedMs: 1000, statusMessage: '已暂停', reportReady: false,
   counts: {candidates: 1, contents: 1, opinions: 1, validOpinions: 0, sources: 1, warnings: 0}});
 const snapshot = (state: RunManifest['state'] = 'paused'): BrowserRun => ({id: runId, manifest: manifest(state),
@@ -48,11 +48,12 @@ class FakeBridge implements ExtensionBridge {
   readonly calls: Array<{method: string; payload?: unknown}> = [];
   commentReadiness: unknown = 1;
   isolatedCollectionWindow: unknown = 1;
+  contentWindowEnforced: unknown = 1;
   private listeners = new Set<(event: ExtensionEvent) => void>();
   async request<T>(method: string, payload?: unknown) {
     this.calls.push({method, payload});
     return (method === 'status' ? {connected: true, loginState: 'logged_in', commentReadiness: this.commentReadiness,
-      isolatedCollectionWindow: this.isolatedCollectionWindow} : {accepted: true}) as T;
+      isolatedCollectionWindow: this.isolatedCollectionWindow, contentWindowEnforced: this.contentWindowEnforced} : {accepted: true}) as T;
   }
   subscribe(listener: (event: ExtensionEvent) => void) {this.listeners.add(listener); return () => {this.listeners.delete(listener);};}
   send(type: ExtensionEvent['type'], payload: unknown, id = runId) {
@@ -190,6 +191,15 @@ describe('browser local persistence and cross-tab lifecycle', () => {
       expect(await store.list()).toEqual([]);
       expect(bridge.calls.some((call) => call.method === 'start')).toBe(false);
     }
+  });
+
+  it('requires the content-window collector before creating live work', async () => {
+    const store = new BrowserRunStore('old-content-window-start', new IDBFactory()), bridge = new FakeBridge();
+    bridge.contentWindowEnforced = undefined;
+    const runtime = new BrowserResearchRuntime(store, bridge, service().session, new BrowserRunLocks(lockManager()));
+    await expect(runtime.start(manifest().request)).rejects.toThrow('请更新至 0.1.9');
+    expect(await store.list()).toEqual([]);
+    expect(bridge.calls.some((call) => call.method === 'start')).toBe(false);
   });
 
   it('leaves a paused checkpoint intact until an isolated-window collector is available', async () => {

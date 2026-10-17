@@ -10,7 +10,7 @@ const settings = (userId: string): AppSettings => ({apiVersion: 11, runtime: 'br
   analysis: {aiConfigured: true, transport: 'proxy', model: 'gpt-6-luna', reasoningEffort: 'medium', liveMode: 'ai', demoMode: 'rule_demo',
     account: {userId, email: `${userId}@example.test`, role: 'user'}},
   defaults: {durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'], includeVideos: true,
-    includeDynamics: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20}});
+    includeArticles: true, mode: 'live', browserVisible: true, browserWindowCount: 4, maxSources: 20}});
 
 const run: RunManifest = {
   id: 'browser-delete-test', state: 'completed', request: {...settings('test-user').defaults, name: '待删除调查'},

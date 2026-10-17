@@ -55,7 +55,7 @@ export const NewResearch = ({
   const [keywordSaveMessage, setKeywordSaveMessage] = useState('');
   const [keywordSaveError, setKeywordSaveError] = useState('');
   const [includeVideos, setVideos] = useState(settings.defaults.includeVideos);
-  const [includeDynamics, setDynamics] = useState(settings.defaults.includeDynamics);
+  const [includeArticles, setArticles] = useState(settings.defaults.includeArticles);
   const [mode, setMode] = useState<'live' | 'demo'>(settings.defaults.mode);
   const [browserWindowCount, setBrowserWindowCount] = useState([4, 8].includes(settings.defaults.browserWindowCount) ? settings.defaults.browserWindowCount : 4);
   const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
@@ -99,7 +99,7 @@ export const NewResearch = ({
       contentWindowDays,
       keywords: keywordList,
       includeVideos,
-      includeDynamics,
+      includeArticles,
       mode,
       browserVisible: true,
       browserWindowCount: mode === 'live' ? browserWindowCount : 1,
@@ -212,7 +212,7 @@ export const NewResearch = ({
         {keywordSaveError && <p className="keyword-error" role="alert">{keywordSaveError}</p>}
         <div className="inline-options">
           <label className="check-option"><input type="checkbox" checked={includeVideos} onChange={(event) => setVideos(event.target.checked)}/><span>热门视频</span></label>
-          <label className="check-option"><input type="checkbox" checked={includeDynamics} onChange={(event) => setDynamics(event.target.checked)}/><span>热门动态</span></label>
+          <label className="check-option"><input type="checkbox" checked={includeArticles} onChange={(event) => setArticles(event.target.checked)}/><span>专栏文章</span></label>
           <label className="select-option"><span>内容范围</span><select value={contentWindowDays} onChange={(event) => setWindow(Number(event.target.value))}><option value={7}>最近 7 天</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label>
         </div>
 
@@ -245,7 +245,7 @@ export const NewResearch = ({
           <span className="parallel-windows-icon"><Files size={20}/></span>
           <span className="parallel-windows-copy">
             <strong>最多采集来源数</strong>
-            <small>视频和动态合计，可设置 3–200 个；采完这个数量会生成报告。</small>
+            <small>视频和专栏合计，可设置 3–200 个；采完这个数量会生成报告。</small>
           </span>
           <div className="source-limit-input"><input aria-label="最多采集来源数" type="number" min={3} max={200} value={maxSources} onChange={(event) => setMaxSources(Number(event.target.value))}/><em>个</em></div>
         </label>
@@ -309,7 +309,7 @@ export const NewResearch = ({
           <p>{browserRuntime ? '扩展只采集 B站公开可见内容，并只关闭自己创建的调查标签页；原始数据不上传。' : '工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。'}</p>
         </section>
 
-        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || Boolean(keywordError) || (!includeVideos && !includeDynamics) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
+        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || Boolean(keywordError) || (!includeVideos && !includeArticles) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
           {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : analysisUnavailable ? 'AI 分析服务暂不可用' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
         </button>
         <p className="compliance-copy">只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>

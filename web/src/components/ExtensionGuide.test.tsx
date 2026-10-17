@@ -8,7 +8,7 @@ describe('ExtensionGuide', () => {
     expect(screen.getByRole('link', {name: '下载 Chrome 扩展'})).toHaveAttribute('href', `${import.meta.env.BASE_URL}naruto-mobile-chrome-extension.zip`);
     expect(screen.getByDisplayValue('chrome://extensions')).toBeVisible();
     expect(screen.getByText(/清除网站数据会删除本地调查/)).toBeVisible();
-    expect(screen.getByText(/当前版本 0.1.8/)).toBeVisible();
+    expect(screen.getByText(/当前版本 0.1.9/)).toBeVisible();
     expect(screen.getByText(/后台评论仍未加载时/)).toBeVisible();
     expect(screen.getByText(/采集会新开一个独立 Chrome 窗口/)).toBeVisible();
     expect(screen.getByText(/橙色“火影调查”标签页组/)).toBeVisible();

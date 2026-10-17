@@ -29,9 +29,10 @@ export const normalizeResearchRequest = (value: unknown): ResearchRequest => {
   }
 
   const includeVideos = source.includeVideos !== false;
-  const includeDynamics = source.includeDynamics !== false;
-  if (!includeVideos && !includeDynamics) {
-    throw new RequestValidationError('视频和动态至少选择一种。');
+  // Older runs stored the retired dynamic-search flag; it now selects 专栏 articles.
+  const includeArticles = (source.includeArticles ?? source.includeDynamics) !== false;
+  if (!includeVideos && !includeArticles) {
+    throw new RequestValidationError('视频和专栏至少选择一种。');
   }
   const mode = source.mode === 'demo' ? 'demo' : 'live';
   return {
@@ -40,7 +41,7 @@ export const normalizeResearchRequest = (value: unknown): ResearchRequest => {
     contentWindowDays: normalizedInteger(source.contentWindowDays ?? 30, '内容范围', 1, 365),
     keywords,
     includeVideos,
-    includeDynamics,
+    includeArticles,
     mode,
     browserVisible: source.browserVisible !== false,
     browserWindowCount: normalizedInteger(source.browserWindowCount ?? 4, '并行窗口数', 1, 8),

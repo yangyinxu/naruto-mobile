@@ -10,7 +10,7 @@ import {CHANNEL, collectionInput, contentUrl, isBilibiliUrl, isExtensionRequest,
 import {readContentPage, readLoginPage, readSearchPage} from '../src/browserExtension/pageScripts';
 
 const request = {name: 'Synthetic test', durationMinutes: 5, contentWindowDays: 30,
-  keywords: ['火影手游'], includeVideos: true, includeDynamics: true, mode: 'live',
+  keywords: ['火影手游'], includeVideos: true, includeArticles: true, mode: 'live',
   browserVisible: true, browserWindowCount: 4, maxSources: 20};
 const input = () => ({manifest: {id: '20261013T200000-12345678', request: {...request}},
   checkpoint: {schemaVersion: 1, pendingCandidates: [], seenContentIds: [], seenOpinionIds: [], activeElapsedMs: 0, updatedAt: new Date().toISOString()}});
@@ -42,6 +42,9 @@ test('the local Archtree portal on port 8080 is accepted without granting other 
 test('canonical navigation and checkpoints reject foreign, credentialed and arbitrary Bilibili links', () => {
   assert.equal(contentUrl('https://www.bilibili.com/video/BV123456/?tracking=x', 'video'), 'https://www.bilibili.com/video/BV123456');
   assert.equal(contentUrl('https://t.bilibili.com/123456789', 'dynamic'), 'https://t.bilibili.com/123456789');
+  assert.equal(contentUrl('https://www.bilibili.com/read/cv53443781/?from=search', 'article'), 'https://www.bilibili.com/read/cv53443781');
+  assert.equal(contentUrl('https://www.bilibili.com/read/game#rid=8', 'article'), undefined);
+  assert.equal(contentUrl('https://evil.test/read/cv53443781', 'article'), undefined);
   for (const value of ['https://evil.test/video/BV123456', 'https://www.bilibili.com/account', 'javascript:alert(1)', 'https://user@www.bilibili.com/video/BV123456', 'https://www.bilibili.com:8443/video/BV123456']) assert.equal(contentUrl(value, 'video'), undefined);
   assert.equal(isBilibiliUrl('https://api.bilibili.com/x/web-interface/nav'), true);
   assert.equal(isBilibiliUrl('https://api.bilibili.com.evil.test/'), false);
@@ -57,6 +60,9 @@ test('search settings and stable IDs preserve desktop collection and cache contr
   const values = searchUrls(collectionInput(input()).manifest.request, Date.UTC(2026, 9, 13));
   assert.equal(values.length, 2);
   assert.equal(new URL(values[0].url).searchParams.get('order'), 'click');
+  // Article search ignores pubtime, so it is sorted newest first and dates are checked locally.
+  assert.equal(new URL(values[1].url).pathname, '/article');
+  assert.equal(new URL(values[1].url).searchParams.get('order'), 'pubdate');
   assert.equal(new URL(values[0].url).searchParams.get('keyword'), '火影手游');
   assert.equal(Number(new URL(values[0].url).searchParams.get('pubtime_end_s')) - Number(new URL(values[0].url).searchParams.get('pubtime_begin_s')), 30 * 86400);
   assert.equal(await stableBrowserId('BV123456', 'comment', '123456789'), createHash('sha256').update(['BV123456', 'comment', '123456789'].join('\0')).digest('base64url').slice(0, 24));
@@ -107,6 +113,7 @@ test('synthetic DOM keeps comments, nested replies, author fields, counts, dates
 
 test('open ShadowRoot fixture preserves Bilibili component public backing fields', async () => {
   await withDocument('<title>Shadow fixture</title><bili-comments></bili-comments>', async () => {
+    Object.assign(document.defaultView!, {__INITIAL_STATE__: {videoData: {pubdate: 1791967296}}});
     const list = document.querySelector('bili-comments')!.attachShadow({mode: 'open'});
     const host = document.createElement('bili-comment-renderer');
     Object.assign(host, {__data: {rpid_str: '9007199254740993', member: {mid: '88', uname: 'Shadow author'}, ctime: 1791849600, like: 4}});
@@ -120,6 +127,26 @@ test('open ShadowRoot fixture preserves Bilibili component public backing fields
     assert.equal(data.comments[0].sourceRecordId, '9007199254740993');
     assert.equal(data.comments[0].authorName, 'Shadow author');
     assert.equal(data.comments[0].publishedAtEpochSeconds, 1791849600);
+    assert.equal(data.publishedAtEpochSeconds, 1791967296);
+  });
+});
+
+test('search cards expose their publish label and current video pages their release metadata', async () => {
+  await withDocument(`<div class="bili-video-card"><a href="https://www.bilibili.com/video/BV1phpC6nEjG/"><img></a>
+      <div class="bili-video-card__info"><a href="https://www.bilibili.com/video/BV1phpC6nEjG/"><h3 title="迪鲁达全技能爆料">迪鲁达全技能爆料</h3></a>
+      <span class="bili-video-card__info--author">火影忍者手游情报君</span><span class="bili-video-card__info--date">· 9月29日</span></div></div>
+    <div class="b-article-card"><a href="https://www.bilibili.com/read/cv28382398?from=search"><div class="article-banner"></div></a>
+      <div class="article-content"><a href="https://www.bilibili.com/read/cv28382398?from=search"><h2 title="火影手游八周年生日会">火影手游八周年生日会</h2></a>
+      手机游戏 · 281点赞 · 评论 (448条)<span>隔壁王乔治</span>· 2023-12-07</div></div>`, () => {
+    const videos = readSearchPage('video');
+    assert.equal(videos[0].dateText, '9月29日');
+    const articles = readSearchPage('article');
+    assert.equal(articles.length, 2);
+    assert.equal(articles[0].title, '火影手游八周年生日会');
+    assert.equal(articles[0].dateText, '2023-12-07');
+  });
+  await withDocument('<title>Video</title><meta property="video:release_date" content="2026-10-14T08:41:36.000Z">', async () => {
+    assert.equal((await readContentPage()).publishedAt, '2026-10-14T08:41:36.000Z');
   });
 });
 
@@ -178,12 +205,13 @@ function chromeFixture() {
   let failSearch = false;
   let loggedIn = true;
   let sourceCount = 4;
-  let publishedAt: string | undefined;
-  let includeDynamic = false;
+  let publishedAt: string | undefined = new Date().toISOString();
+  let includeArticle = false;
+  let searchDates: Array<string | undefined> = [];
   let repurposeLogin = false;
   let repurposeDiscovery = false;
   let repurposeFinalContent = false;
-  let redirectDynamic = false;
+  let redirectArticle = false;
   let hasLoginResult = false;
   let loginResult: unknown;
   let connectionWrite: (() => Promise<void>) | undefined;
@@ -273,7 +301,7 @@ function chromeFixture() {
         if (updateCalls === failUpdateAt) throw new Error('Tabs cannot be edited right now.');
         updated.push(id);
         tabs.get(id)!.url = repurposeFinalContent && url!.endsWith('/video/BVFixture0') ? 'https://www.bilibili.com/video/BVManual'
-          : redirectDynamic && url!.startsWith('https://t.bilibili.com/') ? 'https://www.bilibili.com/opus/1234567890123' : url!;
+          : redirectArticle && url!.startsWith('https://www.bilibili.com/read/cv') ? 'https://www.bilibili.com/opus/1234567890123' : url!;
         tabs.get(id)!.status = 'complete'; delete tabs.get(id)!.pendingUrl; return tabs.get(id);
       },
       remove: async (id: number) => {
@@ -306,7 +334,7 @@ function chromeFixture() {
       }
       if (func.name === 'readSearchPage') {
         if (failSearch) throw new Error('synthetic search failure');
-        if (repurposeDiscovery && args?.[0] === 'dynamic') {tabs.get(target.tabId)!.pendingUrl = 'https://www.bilibili.com/video/BVManual'; tabs.get(target.tabId)!.status = 'loading';}
+        if (repurposeDiscovery && args?.[0] === 'article') {tabs.get(target.tabId)!.pendingUrl = 'https://www.bilibili.com/video/BVManual'; tabs.get(target.tabId)!.status = 'loading';}
         if (moveSearchGroup) tabs.get(target.tabId)!.groupId = 70;
         if (moveSearchWindow) tabs.get(target.tabId)!.windowId = 2;
         if (closeSearchWindow) {
@@ -314,8 +342,9 @@ function chromeFixture() {
           for (const [id, tab] of tabs) if (tab.windowId === windowId) tabs.delete(id);
           windows.delete(windowId);
         }
-        if (includeDynamic && args?.[0] === 'dynamic') return [{result: [{href: redirectDynamic ? 'https://t.bilibili.com/1234567890123' : 'https://www.bilibili.com/opus/1234567890123', title: 'Dynamic fixture', context: ''}]}];
-        return [{result: Array.from({length: sourceCount}, (_value, i) => ({href: `https://www.bilibili.com/video/BVFixture${i}`, title: `Source ${i}`, context: ''}))}];
+        if (args?.[0] === 'article') return [{result: includeArticle ? [{href: 'https://www.bilibili.com/read/cv12345678?from=search', title: 'Article fixture', context: '', dateText: '昨天'}] : []}];
+        return [{result: Array.from({length: sourceCount}, (_value, i) => ({href: `https://www.bilibili.com/video/BVFixture${i}`, title: `Source ${i}`, context: '',
+          ...(searchDates[i] ? {dateText: searchDates[i]} : {})}))}];
       }
       if (failContent) throw new Error('private upstream diagnostic should not escape');
       if (missingContentResult) return [{result: null}];
@@ -393,9 +422,10 @@ function chromeFixture() {
         rejectWrite(new Error('扩展本地连接状态暂时无法保存。'));
       }};
     },
-    sources: (count: number) => {sourceCount = count;}, expired: () => {publishedAt = '2000-01-01T00:00:00Z';}, dynamic: () => {includeDynamic = true;},
+    sources: (count: number) => {sourceCount = count;}, expired: () => {publishedAt = '2000-01-01T00:00:00Z';}, undated: () => {publishedAt = undefined;},
+    searchDates: (values: Array<string | undefined>) => {searchDates = values;}, article: () => {includeArticle = true;},
     repurposeLogin: () => {repurposeLogin = true;}, repurposeDiscovery: () => {repurposeDiscovery = true;},
-    repurposeFinalContent: () => {repurposeFinalContent = true;}, redirectDynamic: () => {includeDynamic = true; redirectDynamic = true;}};
+    repurposeFinalContent: () => {repurposeFinalContent = true;}, redirectArticle: () => {includeArticle = true; redirectArticle = true;}};
 }
 async function until(fn: () => boolean) {
   for (let i = 0; i < 1000; i += 1) { if (fn()) return; await new Promise((resolveWait) => setTimeout(resolveWait, 2)); }
@@ -621,8 +651,8 @@ test('a first null login result leaves a valid disconnected status and an explic
   assert.equal(disconnected.loginState, 'logged_out');
   assert.equal(disconnected.commentReadiness, 1);
   assert.equal(disconnected.isolatedCollectionWindow, 1);
-  assert.equal(disconnected.extensionVersion, '0.1.8');
-  assert.match(String(disconnected.message), /0\.1\.8/);
+  assert.equal(disconnected.extensionVersion, '0.1.9');
+  assert.match(String(disconnected.message), /0\.1\.9/);
   assert.equal(disconnected.activeInvestigations, 0);
   assert.equal(disconnected.accountName, undefined);
   assert.equal(fixture.session.connection, undefined);
@@ -636,8 +666,8 @@ test('a first null login result leaves a valid disconnected status and an explic
   assert.equal(retry.loginState, 'logged_in');
   assert.equal(retry.commentReadiness, 1);
   assert.equal(retry.isolatedCollectionWindow, 1);
-  assert.equal(retry.extensionVersion, '0.1.8');
-  assert.match(String(retry.message), /0\.1\.8/);
+  assert.equal(retry.extensionVersion, '0.1.9');
+  assert.match(String(retry.message), /0\.1\.9/);
   assert.equal(retry.accountName, 'Fixture');
   assert.equal(retry.accountUidSuffix, '5678');
   assert.equal(fixture.tabs.size, 2);
@@ -1335,9 +1365,9 @@ test('a paused job resumes the saved candidates and preserves opinion deduplicat
   assert.equal(fixture.tabs.has(1), true);
 });
 
-test('resume completes dynamic discovery after an early pause without dropping old pending video sources', async () => {
+test('resume completes article discovery after an early pause without dropping old pending video sources', async () => {
   const fixture = chromeFixture();
-  fixture.dynamic();
+  fixture.article();
   await loadWorker(fixture);
   const resumeInput = input();
   const pending = {id: 'BVFixture0', type: 'video', url: 'https://www.bilibili.com/video/BVFixture0', title: 'Existing video', discoveryKeyword: '火影手游', discoveryRank: 1};
@@ -1346,7 +1376,7 @@ test('resume completes dynamic discovery after an early pause without dropping o
   const complete = fixture.output.find((value) => value.type === 'complete')!.payload as {checkpoint: {seenContentIds: string[]}};
   assert.equal(complete.checkpoint.seenContentIds.length, 5);
   assert.equal(fixture.output.filter((value) => value.type === 'content' && (value.payload as {id: string}).id === 'BVFixture0').length, 1);
-  assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {type: string}).type === 'dynamic'), true);
+  assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {type: string}).type === 'article'), true);
   const contentIndex = fixture.output.findIndex((value) => value.type === 'content');
   assert.equal(fixture.output.slice(0, contentIndex).some((value) => value.type === 'checkpoint'
     && (value.payload as {pendingCandidates: unknown[]}).pendingCandidates.length === 5), true);
@@ -1409,6 +1439,41 @@ test('a source with an expired content date cannot create checkpoint references 
   assert.equal(complete.checkpoint.pendingCandidates.length, 0);
 });
 
+test('a source whose publish time cannot be confirmed is skipped instead of treated as recent', async () => {
+  const fixture = chromeFixture();
+  fixture.undated();
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  assert.equal(fixture.output.some((value) => value.type === 'content'), false);
+  assert.equal(fixture.output.some((value) => value.type === 'opinion'), false);
+  assert.equal(fixture.output.filter((value) => value.type === 'warning'
+    && String((value.payload as {message: string}).message).includes('无法确认该来源的发布时间')).length, 4);
+});
+
+test('search results dated outside the content window are never queued', async () => {
+  const fixture = chromeFixture();
+  fixture.searchDates(['2025-03-12', '3天前', '去年某天', '昨天']);
+  await loadWorker(fixture);
+  fixture.send('start', input());
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const ids = fixture.output.filter((value) => value.type === 'content').map((value) => (value.payload as {id: string}).id);
+  assert.equal(ids.includes('BVFixture0'), false);
+  assert.deepEqual(ids.filter((id) => id.startsWith('BV')).sort(), ['BVFixture1', 'BVFixture2', 'BVFixture3']);
+});
+
+test('videos cannot crowd 专栏 articles out of the source limit', async () => {
+  const fixture = chromeFixture();
+  fixture.sources(40);
+  fixture.article();
+  await loadWorker(fixture);
+  fixture.send('start', {...input(), manifest: {...input().manifest, request: {...request, maxSources: 5}}});
+  await until(() => fixture.output.some((value) => value.type === 'complete'));
+  const contents = fixture.output.filter((value) => value.type === 'content').map((value) => value.payload as {type: string});
+  assert.equal(contents.length, 5);
+  assert.equal(contents.filter((item) => item.type === 'article').length, 1);
+});
+
 test('worker rejects a forged sender before accepting privileged commands', async () => {
   const fixture = chromeFixture();
   let rejected = false;
@@ -1462,15 +1527,16 @@ test('a different final Bilibili document is not adopted or closed as a tool-own
   assert.equal(fixture.tabs.get(11)?.url, 'https://www.bilibili.com/video/BVManual');
 });
 
-test('a same-ID dynamic canonical redirect remains collectible and safely cleaned up', async () => {
+test('a 专栏 article served through the opus reader remains collectible and safely cleaned up', async () => {
   const fixture = chromeFixture();
-  fixture.redirectDynamic();
+  fixture.redirectArticle();
   await loadWorker(fixture);
   fixture.send('start', input());
   await until(() => fixture.output.some((value) => value.type === 'complete'));
   assert.equal((fixture.output.find((value) => value.type === 'complete')!.payload as {outcome: string}).outcome, 'source_exhausted');
-  const dynamic = fixture.output.find((value) => value.type === 'content' && (value.payload as {type: string}).type === 'dynamic')!.payload as {resolvedUrl: string};
-  assert.equal(dynamic.resolvedUrl, 'https://www.bilibili.com/opus/1234567890123');
+  const article = fixture.output.find((value) => value.type === 'content' && (value.payload as {type: string}).type === 'article')!.payload as {id: string; resolvedUrl: string};
+  assert.equal(article.id, 'cv12345678');
+  assert.equal(article.resolvedUrl, 'https://www.bilibili.com/opus/1234567890123');
   assert.equal(fixture.tabs.size, 2);
   assert.equal(fixture.tabs.has(1), true);
 });

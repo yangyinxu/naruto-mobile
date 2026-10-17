@@ -33,7 +33,7 @@ Chrome 连接只监听当前电脑的 `127.0.0.1`。不同电脑会在运行时�
 - 默认使用 4 个专用调查标签页，可在主页选择 4 或 8 个并行标签页
 - AI 初筛和详析共享最多 12 个请求的独立并发额度；限流时遵守等待时间并自动降低并发。初筛结果逐批进入详析，每批尽量填满 10 条，各条保留自己的来源与父评论语境
 - 分析页分开显示总体处理、Decisions 初筛和 Luna 详析，并列出缓存、本地排除、初筛跳过及详析的合计关系；原始收集数与去重后的处理数分别说明
-- 优先热门视频和动态
+- 优先热门视频和最新专栏；只保留发布时间确认在内容范围内的来源
 - 覆盖多个独立来源后再深入评论
 - 单文件 EXE 的数据目录默认为 Windows“文档/火影手游玩家反馈调查工具/data”，源码启动时默认为项目下的 `data/`；两者都可在主页通过系统文件夹选择器更改
 - 原始 JSONL 以 UTF-8 明文保存，不做整文件加密；公开用户名、UID 与评论同记录保存，便于逐条溯源
@@ -273,3 +273,12 @@ Bilibili, and reapplies mute when reusing it for another source. Foreground
 comment retries stay muted, while existing user tabs retain their audio settings.
 Replace the extension files, reload it in Chrome, and refresh the portal to use
 this fix.
+Extension `0.1.9` enforces the selected content window itself instead of trusting
+Bilibili's search filter. It reads each source's real publish time (video
+`pubdate`/`video:release_date`, 专栏 `publish_time`, opus `pub_ts`) and skips any
+source outside the window or without a confirmable date. Search-card labels such
+as `9月29日`, `3天前`, `昨天` and `2025-03-12` drop out-of-window results before
+they are queued. The retired 动态 search (Bilibili no longer has that page) is
+replaced by 专栏 article search sorted newest first, and each search gets an equal
+share of the source limit so videos cannot crowd out articles. The portal
+requires this version before starting or resuming live collection.

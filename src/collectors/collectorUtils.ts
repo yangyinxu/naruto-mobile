@@ -16,10 +16,11 @@ export const normalizedUrl = (value: string) => {
   }
 };
 
-export const contentIdFromUrl = (url: string, type: 'video' | 'dynamic') => {
+export const contentIdFromUrl = (url: string, type: 'video' | 'dynamic' | 'article') => {
   const match = type === 'video'
     ? url.match(/\/video\/(BV[\w]+)/i)
-    : url.match(/\/(?:opus\/)?(\d{6,})/);
+    : type === 'article' ? url.match(/\/read\/(cv\d+)/i)
+      : url.match(/\/(?:opus\/)?(\d{6,})/);
   return match?.[1] ?? `${type}_${stableId(url)}`;
 };
 

@@ -18,7 +18,7 @@ const settings = {
     contentWindowDays: 30,
     keywords: ['火影忍者手游'],
     includeVideos: true,
-    includeDynamics: true,
+    includeArticles: true,
     mode: 'live' as const,
     browserVisible: true,
     browserWindowCount: 1,

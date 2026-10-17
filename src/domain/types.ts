@@ -12,7 +12,8 @@ export const runStates = [
 
 export type RunState = typeof runStates[number];
 export type ResearchMode = 'live' | 'demo';
-export type ContentType = 'video' | 'dynamic';
+/** 'dynamic' remains readable in older runs; new runs search videos and 专栏 articles. */
+export type ContentType = 'video' | 'dynamic' | 'article';
 export type StopReason = 'budget_exhausted' | 'source_exhausted' | 'user_finalized';
 export type AnalysisMode = 'ai' | 'rule_demo';
 export type InsightValue = 'strong' | 'weak' | 'none';
@@ -81,7 +82,7 @@ export interface ResearchRequest {
   contentWindowDays: number;
   keywords: string[];
   includeVideos: boolean;
-  includeDynamics: boolean;
+  includeArticles: boolean;
   mode: ResearchMode;
   browserVisible: boolean;
   browserWindowCount: number;

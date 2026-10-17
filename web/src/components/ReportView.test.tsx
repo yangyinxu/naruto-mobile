@@ -73,7 +73,7 @@ vi.mock('../lib/api', () => ({api: apiMocks}));
 const run: RunManifest = {
   id: data.runId,
   state: 'completed',
-  request: {name: '火影手游玩家反馈调查', durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'], includeVideos: true, includeDynamics: false, mode: 'live', browserVisible: true, browserWindowCount: 1, maxSources: 20},
+  request: {name: '火影手游玩家反馈调查', durationMinutes: 5, contentWindowDays: 30, keywords: ['火影忍者手游'], includeVideos: true, includeArticles: false, mode: 'live', browserVisible: true, browserWindowCount: 1, maxSources: 20},
   createdAt: data.generatedAt,
   updatedAt: data.generatedAt,
   activeElapsedMs: 300_000,

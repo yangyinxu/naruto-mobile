@@ -6,7 +6,7 @@ import type {BrowserRun} from './types';
 const snapshot = (id: string): BrowserRun => ({
   id,
   manifest: {schemaVersion: 1, id, state: 'completed', request: {name: id, durationMinutes: 5, contentWindowDays: 30,
-    keywords: ['火影忍者手游'], includeVideos: true, includeDynamics: true, mode: 'demo', browserVisible: true,
+    keywords: ['火影忍者手游'], includeVideos: true, includeArticles: true, mode: 'demo', browserVisible: true,
     browserWindowCount: 1, maxSources: 20}, createdAt: '2026-10-14T00:00:00.000Z',
     updatedAt: '2026-10-14T00:00:00.000Z', activeElapsedMs: 0, statusMessage: '已完成', reportReady: true,
     counts: {candidates: 0, contents: 0, opinions: 0, validOpinions: 0, sources: 0, warnings: 0}},

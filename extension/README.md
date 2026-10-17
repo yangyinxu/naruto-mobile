@@ -204,3 +204,13 @@ node scripts/smoke-browser-extension.mjs
 Remove-Item Env:NARUTO_EXTENSION_TEST_MODE
 Remove-Item Env:NARUTO_EXTENSION_TEST_EXECUTABLE
 ```
+
+Version `0.1.9` enforces the investigation's content window locally. Bilibili's
+search filter is not trusted: search-card dates (`9月29日`, `3天前`, `昨天`,
+`2025-03-12`) drop older results before they are queued, and each opened source
+must expose a publish time (video `pubdate` or `video:release_date`, 专栏
+`publish_time`, opus `pub_ts`, or its displayed label) inside the window.
+Sources without a confirmable date are skipped with a warning. The retired 动态
+search page is replaced by 专栏 article search (`/read/cv…`, newest first), and
+articles may be read through Bilibili's opus reader. Each search target first
+receives an equal share of the source limit.

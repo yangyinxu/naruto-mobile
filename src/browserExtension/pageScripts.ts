@@ -14,7 +14,11 @@ export interface VisibleComment {
 export interface ContentSnapshot {
   title: string;
   description: string;
+  /** Machine-readable publish time from page data or metadata. */
   publishedAt?: string;
+  publishedAtEpochSeconds?: number;
+  /** Displayed publish time, parsed by the worker when no exact time exists. */
+  publishedAtText?: string;
   resolvedUrl: string;
   comments: VisibleComment[];
   commentState: 'loaded' | 'empty' | 'not_ready' | 'verification_required';
@@ -34,16 +38,27 @@ export function readLoginPage() {
 }
 
 /** Reads public search links; the privileged worker validates every resulting URL. */
-export function readSearchPage(type: 'video' | 'dynamic') {
-  const selector = type === 'video' ? 'a[href*="/video/BV"]' : 'a[href*="/opus/"], a[href*="t.bilibili.com/"]';
+export function readSearchPage(type: 'video' | 'dynamic' | 'article') {
+  const selector = type === 'video' ? 'a[href*="/video/BV"]' : type === 'article' ? 'a[href*="/read/cv"]'
+    : 'a[href*="/opus/"], a[href*="//t.bilibili.com/"]';
   if (/^(?:安全验证|人机验证|验证码|访问验证|captcha|security verification)(?:\s*[-_|·].*)?$/i.test(document.title.trim())) {
     throw new Error('B站要求人工验证，请在自己的浏览器完成后重试。');
   }
-  return Array.from(document.querySelectorAll<HTMLAnchorElement>(selector)).slice(0, 400).map((anchor) => ({
-    href: anchor.href.slice(0, 16_384),
-    title: (anchor.getAttribute('title') || anchor.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 2000),
-    context: (anchor.closest('div')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500)
-  }));
+  const clean = (value: string | null | undefined) => (value || '').replace(/\s+/g, ' ').trim();
+  return Array.from(document.querySelectorAll<HTMLAnchorElement>(selector)).slice(0, 400).map((anchor) => {
+    // A whole result card holds the title, author and "· 9月29日" publish label.
+    const card = anchor.closest('.bili-video-card, .b-article-card, .video-list-item, .search-article-card') || anchor.closest('div');
+    const context = clean(card?.textContent);
+    const heading = card?.querySelector('[title], h2, h3');
+    const dateLabel = clean(card?.querySelector('.bili-video-card__info--date')?.textContent);
+    return {
+      href: anchor.href.slice(0, 16_384),
+      title: (clean(anchor.getAttribute('title') || anchor.textContent) || clean(heading?.getAttribute('title') || heading?.textContent)).slice(0, 2000),
+      context: context.slice(0, 500),
+      // The publish label is the last "·"-separated segment of a result card.
+      dateText: (dateLabel || context.split('·').pop() || '').replace(/^·\s*/, '').trim().slice(0, 100)
+    };
+  });
 }
 
 /** Captures bounded visible DOM and open ShadowRoots without requesting private APIs. */
@@ -196,10 +211,24 @@ export async function readContentPage(): Promise<ContentSnapshot> {
     else document.documentElement.scrollIntoView?.({block: 'end', behavior: 'instant'});
     await wait(Math.min(400, Math.max(0, deadline - Date.now())));
   }
+  // MAIN-world reads of the page's own public state carry exact publish times:
+  // videos (videoData.pubdate), 专栏 (readInfo.publish_time) and opus pages (module_author.pub_ts).
+  const state = (document.defaultView as unknown as {__INITIAL_STATE__?: Record<string, unknown>} | null)?.__INITIAL_STATE__ || {};
+  const field = (value: unknown, key: string) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+  const modules = field(field(state, 'detail'), 'modules');
+  const opusAuthor = Array.isArray(modules) ? modules.map((item) => field(item, 'module_author')).find(Boolean) : undefined;
+  const epoch = [field(field(state, 'videoData'), 'pubdate'), field(field(state, 'readInfo'), 'publish_time'),
+    field(field(state, 'readInfo'), 'ctime'), field(opusAuthor, 'pub_ts')]
+    .map(Number).find((value) => Number.isFinite(value) && value > 1_000_000_000 && value < 10_000_000_000);
+  const publishedMeta = metadata('meta[property="video:release_date"]') || metadata('meta[itemprop="datePublished"]')
+    || metadata('meta[itemprop="uploadDate"]') || metadata('meta[property="article:published_time"]');
   return {
     title: (metadata('meta[property="og:title"]') || document.title).replace(/_(?:游戏热门视频|哔哩哔哩.*)$/i, '').trim().slice(0, 2000),
     description: metadata('meta[property="og:description"]'),
-    publishedAt: metadata('meta[itemprop="datePublished"]') || metadata('meta[property="article:published_time"]') || undefined,
+    publishedAt: publishedMeta || undefined,
+    ...(epoch ? {publishedAtEpochSeconds: epoch} : {}),
+    publishedAtText: text(document, ['.pubdate-ip-text', '.pubdate-text', '.publish-text', '.opus-module-author__pub__text',
+      '.opus-module-author__pub', '.bili-dyn-time'])?.slice(0, 100),
     resolvedUrl: location.href,
     comments: [...comments.values()].slice(0, 80),
     commentState

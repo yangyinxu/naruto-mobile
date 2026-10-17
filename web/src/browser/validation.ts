@@ -68,7 +68,7 @@ export const publicUrl = (value: unknown, demo = false, metadata = false): strin
 
 export const decodeCandidate = (value: unknown, demo = false): CandidateContent => {
   const item = object(value);
-  return {id: id(item.id), type: enumeration(item.type, ['video', 'dynamic']), url: publicUrl(item.url),
+  return {id: id(item.id), type: enumeration(item.type, ['video', 'dynamic', 'article']), url: publicUrl(item.url),
     title: text(item.title), discoveryKeyword: text(item.discoveryKeyword, 200), discoveryRank: integer(item.discoveryRank),
     ...(item.discoveryUrl !== undefined ? {discoveryUrl: publicUrl(item.discoveryUrl, demo, true)} : {}),
     ...optionalText(item, ['popularityText', 'publishedAt'])};
@@ -86,7 +86,7 @@ export const decodeContent = (value: unknown, runId: string, demo = false): Cont
 export const decodeOpinion = (value: unknown, runId: string, demo = false): OpinionRecord => {
   const item = object(value);
   return {recordSchemaVersion: 2, runId, id: id(item.id), contentId: id(item.contentId),
-    contentType: enumeration(item.contentType, ['video', 'dynamic']),
+    contentType: enumeration(item.contentType, ['video', 'dynamic', 'article']),
     sourceType: enumeration(item.sourceType, ['comment', 'reply', 'danmaku', 'creator_view']),
     voiceType: enumeration(item.voiceType, ['viewer', 'creator']), text: text(item.text), collectedAt: date(item.collectedAt),
     likes: number(item.likes), replies: number(item.replies), sourceUrl: publicUrl(item.sourceUrl),
