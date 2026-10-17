@@ -3,7 +3,7 @@
  *   Functions: getRunPhase, getRunProgressPercent, RunDetail
  * Internal
  *   Types: Props
- *   Functions: legacyAnalysisProgress
+ *   Functions: formatStageDuration, legacyAnalysisProgress
  *   Constants: activeStates, workingStates, phaseRank
  * @end-catalog */
 
@@ -48,6 +48,14 @@ const phaseRank: Record<RunProgressPhase, number> = {
   analyzing: 3,
   reporting: 4,
   completed: 5
+};
+
+/** Step durations read as m:ss (h:mm:ss past an hour); sub-second steps say so instead of 0:00. */
+const formatStageDuration = (ms: number) => {
+  if (ms < 1000) return '不到 1 秒';
+  const total = Math.round(ms / 1000), hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60), seconds = String(total % 60).padStart(2, '0');
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
 };
 
 const legacyAnalysisProgress = (statusMessage: string) => {
@@ -107,7 +115,27 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
   const collectionFinished = currentPhaseRank >= phaseRank.analyzing;
   const canResume = ['paused', 'failed_recoverable'].includes(run.state);
   const resumeAnalysis = canResume && collectionFinished && !run.reportReady;
-  const displayTimeMs = collectionFinished ? run.activeElapsedMs : remainingMs;
+  // Total time leads once collection ends: active collection plus analysis wall clock, never pauses.
+  const timedAnalysis = run.reportReady && typeof run.analysis?.analysisMs === 'number' ? run.analysis : undefined;
+  const liveAnalysisStart = collectionFinished && !run.reportReady && run.progress?.activity?.startedAt
+    ? Date.parse(run.progress.activity.startedAt) : NaN;
+  const timeLabel = !collectionFinished ? '剩余采集时间' : timedAnalysis ? '总耗时' : Number.isFinite(liveAnalysisStart) ? '已用时间' : '实际采集用时';
+  const displayTimeMs = !collectionFinished ? remainingMs
+    : timedAnalysis ? run.activeElapsedMs + (timedAnalysis.analysisMs ?? 0)
+    : Number.isFinite(liveAnalysisStart) ? run.activeElapsedMs + Math.max(0, Date.now() - liveAnalysisStart) : run.activeElapsedMs;
+  const timeNote = !collectionFinished ? '暂停期间不计时'
+    : timedAnalysis ? '采集与分析合计，不含暂停时间'
+    : Number.isFinite(liveAnalysisStart) ? '分析进行中，完成后显示各步骤耗时'
+    : `${run.request.mode === 'live' ? 'Luna 分析' : '本地分析'}和报告生成不计入`;
+  const timeBreakdown = timedAnalysis ? [
+    {label: '采集', ms: run.activeElapsedMs},
+    ...(timedAnalysis.triageMs !== undefined ? [{label: 'Decisions 初筛', ms: timedAnalysis.triageMs}] : []),
+    ...(timedAnalysis.detailMs !== undefined ? [{label: 'Luna 详析', ms: timedAnalysis.detailMs}] : []),
+    ...(timedAnalysis.triageMs === undefined && timedAnalysis.detailMs === undefined
+      ? [{label: timedAnalysis.mode === 'ai' ? 'Luna 分析' : '本地分析', ms: (timedAnalysis.analysisMs ?? 0) - (timedAnalysis.reportMs ?? 0)}] : []),
+    ...(timedAnalysis.reportMs !== undefined ? [{label: '报告生成', ms: timedAnalysis.reportMs}] : [])
+  ] : [];
+  const stagesOverlap = timedAnalysis?.triageMs !== undefined && timedAnalysis.detailMs !== undefined;
   const progress = getRunProgressPercent(run);
   const remainingMinutes = Math.floor(displayTimeMs / 60_000);
   const remainingSeconds = Math.floor((displayTimeMs % 60_000) / 1000);
@@ -160,7 +188,12 @@ export const RunDetail = ({initial, onBack, onReport, onError}: Props) => {
       {errorMessage && <div className="error-banner"><AlertTriangle size={20}/><div><strong>{resumeAnalysis ? 'Luna 分析中断' : '调查遇到问题'}</strong><span>{errorMessage}</span></div></div>}
 
       <section className="progress-panel">
-        <div className="time-display"><span>{collectionFinished ? '实际采集用时' : '剩余采集时间'}</span><strong>{String(remainingMinutes).padStart(2, '0')}<small>:</small>{String(remainingSeconds).padStart(2, '0')}</strong><em>{collectionFinished ? `${run.request.mode === 'live' ? 'Luna 分析' : '本地分析'}和报告生成不计入` : '暂停期间不计时'}</em></div>
+        <div className="time-display"><span>{timeLabel}</span><strong>{String(remainingMinutes).padStart(2, '0')}<small>:</small>{String(remainingSeconds).padStart(2, '0')}</strong><em>{timeNote}</em>
+          {timeBreakdown.length > 0 && <ul className="time-breakdown" aria-label="各步骤耗时">
+            {timeBreakdown.map((item) => <li key={item.label}><span>{item.label}</span><b>{formatStageDuration(item.ms)}</b></li>)}
+          </ul>}
+          {stagesOverlap && <em>初筛与详析并行进行，分项相加会超过总耗时</em>}
+        </div>
         <div className="progress-area">
           <div className="progress-copy"><span>调查总进度</span><strong>{Math.round(progress)}%</strong></div>
           <div className="progress-track" role="progressbar" aria-label="调查总进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}><span style={{width: `${progress}%`}}/></div>

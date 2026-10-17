@@ -188,7 +188,8 @@ export const decodeManifest = (value: unknown): RunManifest => {
       completedAt: date(analysis.completedAt), strongOpinions: integer(analysis.strongOpinions), weakOpinions: integer(analysis.weakOpinions),
       noiseOpinions: integer(analysis.noiseOpinions), ...optionalText(analysis, ['model'])};
     for (const key of ['localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped', 'detailedAiOpinions', 'processedOpinions',
-      'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions'] as const) {
+      'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions',
+      'analysisMs', 'triageMs', 'detailMs', 'reportMs'] as const) {
       if (analysis[key] !== undefined) result.analysis[key] = integer(analysis[key]);
     }
     if (analysis.usage !== undefined) result.analysis.usage = decodeUsage(analysis.usage);

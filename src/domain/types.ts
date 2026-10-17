@@ -140,6 +140,12 @@ export interface RunManifest {
     cleaningExcludedOpinions?: number;
     missingContentOpinions?: number;
     cachedAiOpinions?: number;
+    /** Wall-clock analysis time, from the start of analysis until the report is saved. */
+    analysisMs?: number;
+    /** Decisions screening and Luna detail spans; they overlap, so they never sum to analysisMs. */
+    triageMs?: number;
+    detailMs?: number;
+    reportMs?: number;
     usage?: AiTokenUsage;
   };
 }

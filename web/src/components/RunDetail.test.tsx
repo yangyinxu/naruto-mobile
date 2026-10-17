@@ -12,6 +12,8 @@
  *     - recognizes completed collection in older manifests with a stale collecting phase
  *     - labels overall counts and the weighted percentage separately from deep analysis
  *     - reconciles completed raw cleaning and final routing counts and labels cached results as a subset
+ *     - leads with total time and lists each step, noting that screening and detail overlap
+ *     - keeps the collection time for completed runs saved before step timings existed
  * @end-catalog */
 
 import {fireEvent, render, screen, waitFor} from '@testing-library/react';
@@ -145,5 +147,27 @@ describe('RunDetail', () => {
     expect(screen.getByText('已分类观众记录 1337 = 强洞察 42 + 弱信号 100 + 无参考价值 1195。')).toBeInTheDocument();
     expect(screen.getByText(/报告采用 40 条/)).toBeInTheDocument();
     expect(screen.getByText(/复用缓存 100 条.*不能再加/)).toBeInTheDocument();
+  });
+
+  it('leads with total time and lists each step, noting that screening and detail overlap', () => {
+    const completed: RunManifest = {...run, state: 'completed', reportReady: true, activeElapsedMs: 20_000, progress: {phase: 'completed'},
+      analysis: {mode: 'ai', classifierVersion: 'v4', completedAt: run.updatedAt, strongOpinions: 41, weakOpinions: 104, noiseOpinions: 97,
+        analysisMs: 200_000, triageMs: 65_000, detailMs: 190_000, reportMs: 400}};
+    render(<RunDetail initial={completed} onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
+    expect(screen.getByText('总耗时')).toBeInTheDocument();
+    // 20 s of collection plus 200 s of analysis.
+    expect(document.querySelector('.time-display strong')).toHaveTextContent('03:40');
+    const steps = screen.getByRole('list', {name: '各步骤耗时'});
+    expect([...steps.querySelectorAll('li')].map((item) => item.textContent)).toEqual(
+      ['采集0:20', 'Decisions 初筛1:05', 'Luna 详析3:10', '报告生成不到 1 秒']);
+    expect(screen.getByText('初筛与详析并行进行，分项相加会超过总耗时')).toBeInTheDocument();
+  });
+
+  it('keeps the collection time for completed runs saved before step timings existed', () => {
+    const legacy: RunManifest = {...run, state: 'completed', reportReady: true, progress: {phase: 'completed'},
+      analysis: {mode: 'ai', classifierVersion: 'v4', completedAt: run.updatedAt, strongOpinions: 1, weakOpinions: 0, noiseOpinions: 0}};
+    render(<RunDetail initial={legacy} onBack={vi.fn()} onReport={vi.fn()} onError={vi.fn()}/>);
+    expect(screen.getByText('实际采集用时')).toBeInTheDocument();
+    expect(screen.queryByRole('list', {name: '各步骤耗时'})).not.toBeInTheDocument();
   });
 });

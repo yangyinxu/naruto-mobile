@@ -27,6 +27,9 @@ export const processRun = async (
   config?: AppConfig,
   options: ProcessRunOptions = {}
 ) => {
+  const analysisStartedAt = Date.now();
+  let triageMs: number | undefined;
+  let detailMs: number | undefined;
   const [contents, rawOpinions] = await Promise.all([
     store.readContents(manifest.id),
     store.readOpinions(manifest.id)
@@ -95,6 +98,8 @@ export const processRun = async (
     fastTriageSkipped = output.fastTriageSkippedCount;
     detailedAiOpinions = output.detailedCount;
     aiUsage = output.usage;
+    triageMs = output.triageMs;
+    detailMs = output.detailMs;
     classifierVersion = classifier.version;
   }
 
@@ -148,6 +153,7 @@ export const processRun = async (
       : '正式报告只使用 Luna 判定为强洞察且无需复核的观众意见；AI 结果仍保留原始证据链。'
   };
   await options.onReporting?.();
+  const reportStartedAt = Date.now();
   const report = buildReport(manifest, contents, cleaning.opinions, classifications, quality);
   const writes: Array<Promise<void>> = [
     store.writeProcessedOpinions(manifest.id, cleaning.opinions),
@@ -157,7 +163,12 @@ export const processRun = async (
   ];
   if (analysisMode === 'ai') writes.push(store.writeAiClassifications(manifest.id, classifications));
   await Promise.all(writes);
+  const finishedAt = Date.now();
   return {
+    analysisMs: finishedAt - analysisStartedAt,
+    reportMs: finishedAt - reportStartedAt,
+    ...(triageMs !== undefined ? {triageMs} : {}),
+    ...(detailMs !== undefined ? {detailMs} : {}),
     analysisMode,
     classifierVersion,
     model: analysisMode === 'ai' ? config?.aiModel : undefined,
