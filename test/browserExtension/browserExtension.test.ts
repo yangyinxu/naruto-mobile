@@ -1284,7 +1284,7 @@ test('a missing script result has a fixed diagnostic without leaking raw page da
   const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {stage: string; reason: string}};
   assert.equal(warning.details.stage, 'injection');
   assert.equal(warning.details.reason, 'script_result_missing');
-  assert.equal(warning.message, 'B站页面未返回采集结果，已保留来源，请稍后继续采集。');
+  assert.equal(warning.message, 'B站页面未返回采集结果，已跳过该来源。');
   assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
 });
 
@@ -1304,7 +1304,7 @@ test('comments that are not ready retain only the failed source and resume witho
   assert.equal(fixture.output.some((value) => value.type === 'content' && (value.payload as {id: string}).id === 'BVFixture0'), false);
   assert.equal(fixture.output.some((value) => value.type === 'opinion' && (value.payload as {contentId: string}).contentId === 'BVFixture0'), false);
   const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {contentId: string; reason: string}};
-  assert.equal(warning.message, 'B站评论尚未加载完成，已保留来源，请稍后继续采集。');
+  assert.equal(warning.message, 'B站评论尚未加载完成，已跳过该来源。');
   assert.equal(warning.details.reason, 'not_ready');
   assert.equal(warning.details.contentId, 'BVFixture0');
   // The run ends for analysis instead of pausing, and says what it skipped.
@@ -1338,7 +1338,7 @@ test('a verification-required source stays pending without committing title-only
   assert.equal(complete.checkpoint.seenOpinionIds.length, 0);
   assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
   const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {reason: string}};
-  assert.equal(warning.message, 'B站要求人工验证，已保留来源，请在自己的浏览器完成后继续采集。');
+  assert.equal(warning.message, 'B站要求人工验证，已跳过该来源。可在自己的浏览器完成验证后重新调查。');
   assert.equal(warning.details.reason, 'verification_required');
   assert.equal(fixture.tabs.size, 2);
 });
@@ -1380,7 +1380,7 @@ test('missing, unknown or inconsistent comment states remain retryable without e
     assert.equal(fixture.output.some((value) => ['content', 'opinion'].includes(String(value.type))), false);
     const warning = fixture.output.find((value) => value.type === 'warning')!.payload as {message: string; details: {reason: string}};
     assert.equal(warning.details.reason, 'invalid_snapshot');
-    assert.equal(warning.message, 'B站页面采集结果格式不正确，已保留来源，请稍后继续采集。');
+    assert.equal(warning.message, 'B站页面采集结果格式不正确，已跳过该来源。');
     assert.equal(JSON.stringify(fixture.output).includes('private upstream diagnostic'), false);
     assert.equal(fixture.tabs.size, 2);
   }

@@ -70,19 +70,19 @@ type CollectionWarningReason = 'not_ready' | 'verification_required' | 'extracti
   | 'script_error' | 'script_result_missing' | 'invalid_snapshot' | 'no_valid_comments' | 'foreground_activation_failed';
 type CollectionReadStage = 'navigation' | 'injection' | 'snapshot' | 'comments' | 'collection' | 'foreground';
 const collectionWarningMessages: Record<CollectionWarningReason, string> = {
-  not_ready: 'B站评论尚未加载完成，已保留来源，请稍后继续采集。',
-  verification_required: 'B站要求人工验证，已保留来源，请在自己的浏览器完成后继续采集。',
-  extraction_error: 'B站页面暂时无法读取，请确认网络、登录状态或人工验证后继续。',
-  ownership_changed: '调查标签页已被更改或移动，已保留页面和来源，请稍后继续采集。',
-  navigation_failed: 'B站来源页面未能打开，已保留来源，请稍后继续采集。',
-  navigation_timeout: 'B站来源页面加载超时，已保留来源，请稍后继续采集。',
-  injection_failed: '无法在 B站来源页面启动采集，已保留来源，请检查页面访问状态后重试。',
-  injection_timeout: 'B站来源页面读取超时，已保留来源，请稍后继续采集。',
-  script_error: 'B站页面采集脚本未能完成，已保留来源，请稍后继续采集。',
-  script_result_missing: 'B站页面未返回采集结果，已保留来源，请稍后继续采集。',
-  invalid_snapshot: 'B站页面采集结果格式不正确，已保留来源，请稍后继续采集。',
-  no_valid_comments: 'B站页面未返回有效评论，已保留来源，请稍后继续采集。',
-  foreground_activation_failed: '调查标签页暂时无法切到前台，已保留来源，请稍后继续采集。'
+  not_ready: 'B站评论尚未加载完成，已跳过该来源。',
+  verification_required: 'B站要求人工验证，已跳过该来源。可在自己的浏览器完成验证后重新调查。',
+  extraction_error: 'B站页面暂时无法读取，已跳过该来源。请确认网络、登录状态或是否需要人工验证。',
+  ownership_changed: '调查标签页已被更改或移动，已跳过该来源，页面保持原样。',
+  navigation_failed: 'B站来源页面未能打开，已跳过该来源。',
+  navigation_timeout: 'B站来源页面加载超时，已跳过该来源。',
+  injection_failed: '无法在 B站来源页面启动采集，已跳过该来源。',
+  injection_timeout: 'B站来源页面读取超时，已跳过该来源。',
+  script_error: 'B站页面采集脚本未能完成，已跳过该来源。',
+  script_result_missing: 'B站页面未返回采集结果，已跳过该来源。',
+  invalid_snapshot: 'B站页面采集结果格式不正确，已跳过该来源。',
+  no_valid_comments: 'B站页面未返回有效评论，已跳过该来源。',
+  foreground_activation_failed: '调查标签页暂时无法切到前台，已跳过该来源。'
 };
 
 /** Only locally classified read failures may select a detailed public warning. */
