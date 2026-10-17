@@ -289,6 +289,9 @@ export interface AiClassificationOutput {
   localHardNoiseCount: number;
   fastTriageSkippedCount: number;
   detailedCount: number;
+  /** Wall-clock span of each AI stage in this invocation; the two overlap. */
+  triageMs?: number;
+  detailMs?: number;
   usage: AiTokenUsage;
 }
 
@@ -1064,7 +1067,17 @@ export class AiClassifier {
       activity.screeningTotal = triagePending.length;
       await publish();
       const triageBatches = chunks(triagePending, Math.min(50, Math.max(30, this.batchSize * 4)));
-      const screenBatch = async (batch: OpinionTask[]) => {
+      // Screening and detail overlap, so each stage keeps its own wall-clock span
+      // from its first request to its last result rather than a share of the total.
+      const spans: {triage?: [number, number]; detail?: [number, number]} = {};
+      const timed = async (stage: 'triage' | 'detail', work: () => Promise<void>) => {
+        const start = Date.now();
+        try { await work(); } finally {
+          const span = spans[stage];
+          spans[stage] = [Math.min(span?.[0] ?? start, start), Math.max(span?.[1] ?? 0, Date.now())];
+        }
+      };
+      const screenBatch = (batch: OpinionTask[]) => timed('triage', async () => {
         const results = await this.requestTriageResilient(batch);
         activity.screened += batch.length;
         if (activity.screened === activity.screeningTotal) activity.stage = 'detail';
@@ -1092,8 +1105,8 @@ export class AiClassifier {
         }
         if (skipped.length) await persist(skipped);
         else await publish();
-      };
-      const detailBatch = async (batch: OpinionTask[]) => {
+      });
+      const detailBatch = (batch: OpinionTask[]) => timed('detail', async () => {
         await this.requestResilient(batch, async (results, completedBatch) => {
           const taskById = new Map(completedBatch.map((item) => [item.opinion.id, item]));
           const records = results.map((result) => {
@@ -1105,7 +1118,7 @@ export class AiClassifier {
           activity.detailed += records.length;
           await persist(records);
         });
-      };
+      });
 
       // Each item carries its own content and parent context, so full batches can span sources.
       // Prefer ready detail work while other screening requests are still running.
@@ -1149,6 +1162,8 @@ export class AiClassifier {
         localHardNoiseCount: localRecords.length,
         fastTriageSkippedCount,
         detailedCount: activity.detailTotal,
+        ...(spans.triage ? {triageMs: spans.triage[1] - spans.triage[0]} : {}),
+        ...(spans.detail ? {detailMs: spans.detail[1] - spans.detail[0]} : {}),
         usage: {
           ...this.usage,
           pricing: this.usage.pricing ? {...this.usage.pricing} : undefined

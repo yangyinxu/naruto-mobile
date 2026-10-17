@@ -507,8 +507,10 @@ export class BrowserResearchRuntime {
   }
 
   private async process(id: string, job: ActiveJob) {
+    const analysisStartedAt = Date.now();
     const run = await this.store.get(id), cleaning = cleanOpinions(run.opinions), demo = run.manifest.request.mode === 'demo';
     let cachedCount = 0;
+    let stageTimings: {triageMs?: number; detailMs?: number} = {};
     let usage: AiTokenUsage | undefined;
     let classifications;
     let classifierVersion;
@@ -535,6 +537,8 @@ export class BrowserResearchRuntime {
         });
       });
       classifications = output.classifications; cachedCount = output.cachedCount; usage = output.usage; classifierVersion = classifier.version;
+      stageTimings = {...(output.triageMs !== undefined ? {triageMs: output.triageMs} : {}),
+        ...(output.detailMs !== undefined ? {detailMs: output.detailMs} : {})};
     }
     if (job.controller.signal.aborted) throw new Error('分析已暂停。');
     const viewers = new Set(cleaning.opinions.filter((item) => item.voiceType === 'viewer').map((item) => item.id));
@@ -560,7 +564,9 @@ export class BrowserResearchRuntime {
       current.processedOpinions = cleaning.opinions; current.classifications = classifications;
       if (!demo) current.aiClassifications = classifications;
       current.quality = quality;
+      const reportStartedAt = Date.now();
       current.report = buildReport(current.manifest, current.contents, cleaning.opinions, classifications, quality);
+      const finishedAt = Date.now();
       current.manifest = {...current.manifest, state: current.manifest.stopReason === 'user_finalized' ? 'completed_early' : 'completed',
         reportReady: true, error: undefined, progress: {phase: 'completed'}, statusMessage: '调查报告已生成并保存在本机。',
         counts: {...current.manifest.counts, validOpinions: valid, opinions: current.opinions.length, contents: current.contents.length,
@@ -570,7 +576,8 @@ export class BrowserResearchRuntime {
           creatorViewsExcluded: creators, fastTriageSkipped: skipped, detailedAiOpinions: quality.detailedAiOpinions,
           processedOpinions: quality.processedOpinions, duplicateOpinions: quality.duplicateOpinions,
           cleaningExcludedOpinions: quality.cleaningExcludedOpinions, missingContentOpinions: quality.missingContentOpinions,
-          cachedAiOpinions: cachedCount, usage}};
+          cachedAiOpinions: cachedCount, analysisMs: finishedAt - analysisStartedAt, reportMs: finishedAt - reportStartedAt,
+          ...stageTimings, usage}};
       this.event(current, 'info', 'report_completed', '调查报告已生成。'); return current;
     });
     this.release(id);

@@ -186,7 +186,8 @@ const validateManifest = (value: unknown): RunManifest => {
     optional(analysis, ['model'], string, '分析信息');
     for (const key of ['strongOpinions', 'weakOpinions', 'noiseOpinions']) integer(analysis[key], key);
     optional(analysis, ['localHardNoise', 'creatorViewsExcluded', 'fastTriageSkipped', 'detailedAiOpinions',
-      'processedOpinions', 'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions'], integer, '分析信息');
+      'processedOpinions', 'duplicateOpinions', 'cleaningExcludedOpinions', 'missingContentOpinions', 'cachedAiOpinions',
+      'analysisMs', 'triageMs', 'detailMs', 'reportMs'], integer, '分析信息');
     if (analysis.usage !== undefined) validateUsage(analysis.usage, '分析用量');
   }
   // Keep only documented manifest fields; account/session configuration is never part of a transfer.

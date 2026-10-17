@@ -382,6 +382,10 @@ export class RunManager {
           cleaningExcludedOpinions: result.cleaningExcludedOpinions,
           missingContentOpinions: result.missingContentOpinions,
           cachedAiOpinions: result.cachedAiOpinions,
+          analysisMs: result.analysisMs,
+          reportMs: result.reportMs,
+          ...(result.triageMs !== undefined ? {triageMs: result.triageMs} : {}),
+          ...(result.detailMs !== undefined ? {detailMs: result.detailMs} : {}),
           usage: result.aiUsage
         },
         counts: {
@@ -555,6 +559,10 @@ export class RunManager {
         cleaningExcludedOpinions: processed.cleaningExcludedOpinions,
         missingContentOpinions: processed.missingContentOpinions,
         cachedAiOpinions: processed.cachedAiOpinions,
+        analysisMs: processed.analysisMs,
+        reportMs: processed.reportMs,
+        ...(processed.triageMs !== undefined ? {triageMs: processed.triageMs} : {}),
+        ...(processed.detailMs !== undefined ? {detailMs: processed.detailMs} : {}),
         usage: processed.aiUsage
       },
       statusMessage: early ? '已根据当前样本提前生成报告。' : '调查和报告已经完成。',

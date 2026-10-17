@@ -17,17 +17,17 @@
  *          .browse-records, .delete-run, .run-icon, .run-main, .run-meta, .run-count, .status,
  *          .status-collecting, .status-discovering, .status-paused, .status-pause_requested, .status-completed,
  *          .status-completed_early, .status-failed_recoverable, .back-button, .run-header, .run-status,
- *          .stage-activity, .error-banner, .progress-panel, .time-display, .progress-area, .progress-copy,
- *          .progress-track, .progress-stages, .progress-stage, .done, .progress-stage-line, .metric-grid,
- *          .analysis-live, .analysis-live-heading, .analysis-live-counts, .analysis-live-wait, .metric-card,
- *          .control-panel, .activity-panel, .control-copy, .section-title, .control-actions, .event-list,
- *          .event, .event-warning, .event-error, .muted, .records-header, .records-toolbar, .record-tabs,
- *          .record-search, .records-summary, .record-list, .record-card, .record-author, .record-kind,
- *          .record-text, .record-description, .record-fields, .record-links, .raw-record, .records-loading,
- *          .compact, .records-pagination, .report-page, .report-toolbar, .markdown-report, .report-loading,
- *          .spin, .toast, .app-loading, .brand-flame, .guide-page, .guide-back, .guide-hero, .guide-kicker,
- *          .guide-time, .guide-security-note, .guide-version-note, .connected, .guide-steps, .guide-step,
- *          .guide-step-action, .guide-step-number, .guide-step-body, .guide-primary-button,
+ *          .stage-activity, .error-banner, .progress-panel, .time-display, .time-breakdown, .progress-area,
+ *          .progress-copy, .progress-track, .progress-stages, .progress-stage, .done, .progress-stage-line,
+ *          .metric-grid, .analysis-live, .analysis-live-heading, .analysis-live-counts, .analysis-live-wait,
+ *          .metric-card, .control-panel, .activity-panel, .control-copy, .section-title, .control-actions,
+ *          .event-list, .event, .event-warning, .event-error, .muted, .records-header, .records-toolbar,
+ *          .record-tabs, .record-search, .records-summary, .record-list, .record-card, .record-author,
+ *          .record-kind, .record-text, .record-description, .record-fields, .record-links, .raw-record,
+ *          .records-loading, .compact, .records-pagination, .report-page, .report-toolbar, .markdown-report,
+ *          .report-loading, .spin, .toast, .app-loading, .brand-flame, .guide-page, .guide-back, .guide-hero,
+ *          .guide-kicker, .guide-time, .guide-security-note, .guide-version-note, .connected, .guide-steps,
+ *          .guide-step, .guide-step-action, .guide-step-number, .guide-step-body, .guide-primary-button,
  *          .guide-finish-button, .guide-connection-result, .guide-finish-actions, .guide-disconnect-button,
  *          .guide-inline-warning, .guide-feedback, .manual-address, .manual-address-heading, .address-row,
  *          .chrome-switch-example, .fake-switch, .guide-muted, .guide-troubleshooting, .export-run,
@@ -285,6 +285,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .time-display strong { font-size: 42px; font-variant-numeric: tabular-nums; margin: 7px 0 2px; letter-spacing: .02em; }
 .time-display small { color: var(--orange); padding: 0 3px; }
 .time-display em { color: #8d8478; font-size: 9px; font-style: normal; }
+.time-breakdown { list-style: none; margin: 14px 0 6px; padding: 12px 0 0; border-top: 1px solid rgba(200, 191, 179, .16); display: grid; gap: 6px; }
+.time-breakdown li { display: flex; justify-content: space-between; gap: 16px; color: #c8bfb3; font-size: 11px; }
+.time-breakdown b { color: #f4eee6; font-weight: 600; font-variant-numeric: tabular-nums; }
 .progress-area { padding: 29px 34px; display: flex; flex-direction: column; justify-content: center; }
 .progress-copy { display: flex; justify-content: space-between; color: #bfb5a8; font-size: 10px; }
 .progress-copy strong { color: white; }
@@ -580,6 +583,7 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
 .error-banner span { font-size: 14px; }
 .time-display > span { font-size: 14px; }
 .time-display em { font-size: 14px; }
+.time-breakdown li { font-size: 14px; }
 .progress-copy { font-size: 14px; }
 .progress-stages { font-size: 13px; }
 .metric-card > span { font-size: 14px; }

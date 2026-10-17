@@ -462,6 +462,10 @@ test('pipelines full detail batches across sources before screening finishes, pr
   assert.deepEqual(output.classifications.map((item) => item.opinionId), opinions.map((item) => item.id));
   assert.equal(output.newCacheRecords.length, 80);
   assert.equal(output.detailedCount, 80);
+  // Both stages ran and report their own overlapping wall-clock spans.
+  assert.equal(typeof output.triageMs, 'number');
+  assert.equal(typeof output.detailMs, 'number');
+  assert.ok(output.triageMs! >= 0 && output.detailMs! >= 0);
   assert.equal(updates.at(-1)?.activity?.screened, 80);
   assert.equal(updates.at(-1)?.activity?.detailed, 80);
 });
@@ -679,6 +683,9 @@ test('confident screening skips avoid Responses calls entirely', async () => {
   const output = await classifier.classifyAll([opinion({text: '这个胜率也太高了吧'})], [content]);
   assert.equal(output.fastTriageSkippedCount, 1);
   assert.equal(output.detailedCount, 0);
+  // Screening ran but no detail request was made, so only the screening span exists.
+  assert.equal(typeof output.triageMs, 'number');
+  assert.equal(output.detailMs, undefined);
   assert.equal(output.classifications[0].reportEligible, false);
   assert.equal(output.usage.estimatedCostUsd, 0.0001);
 });
