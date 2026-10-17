@@ -240,6 +240,9 @@ export class RunManager {
   }
 
   async resume(runId: string) {
+    // A saved pause is broadcast before its collection releases the active slot and run lock.
+    const winding = this.active.get(runId);
+    if (winding?.directive === 'pause') await winding.promise;
     if (this.active.has(runId) || this.backgroundProcessing.has(runId)) {
       throw new Error('该调查正在运行，请等待当前步骤完成。');
     }

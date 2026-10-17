@@ -4,6 +4,7 @@
  * Tests
  *   - saves and broadcasts active screening before a slow provider response completes
  *   - demo run safely pauses, resumes, and generates local artifacts
+ *   - resuming as soon as a pause is saved waits for the paused collection to wind down
  *   - switches the active data directory and blocks changes during collection
  *   - reports live elapsed time between persisted collection checkpoints
  *   - restores interrupted analysis and resumes cached data without Chrome or extra collection time
@@ -139,6 +140,48 @@ test('demo run safely pauses, resumes, and generates local artifacts', async () 
     assert.match(report, /一句话结论/);
     assert.match(report, /虚构演示数据/);
   } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('resuming as soon as a pause is saved waits for the paused collection to wind down', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-resume-race-'));
+  const config: AppConfig = {
+    host: '127.0.0.1',
+    port: 3765,
+    dataRoot: directory,
+    browserChannel: 'chrome',
+    browserHeadless: true,
+    openBrowser: false,
+    uidSalt: 'test-salt',
+    aiModel: 'gpt-5.6-luna',
+    aiReasoningEffort: 'medium',
+    aiBatchSize: 10,
+    aiConcurrency: 3
+  };
+  let unsubscribe = () => {};
+  try {
+    const manager = new RunManager(new FileRunStore(directory), config);
+    await manager.initialize();
+    let resumed: Promise<unknown> | undefined;
+    // The paused manifest is broadcast while its collection still holds the active slot and run lock.
+    unsubscribe = manager.subscribe((manifest) => {
+      if (manifest.state !== 'paused' || resumed) return;
+      resumed = manager.resume(manifest.id);
+      resumed.catch(() => {});
+    });
+    const started = await manager.start(normalizeResearchRequest({
+      keywords: ['火影忍者手游'],
+      durationMinutes: 1,
+      mode: 'demo'
+    }));
+    await manager.pause(started.id);
+    await waitFor(manager, started.id, () => resumed !== undefined);
+    await resumed;
+    const completed = await waitFor(manager, started.id, (state) => state === 'completed');
+    assert.equal(completed.reportReady, true);
+  } finally {
+    unsubscribe();
     await rm(directory, {recursive: true, force: true});
   }
 });
