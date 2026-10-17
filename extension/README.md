@@ -22,8 +22,9 @@ node scripts/build-extension.mjs
 ```
 
 The unpacked extension is written to `build/chrome-extension`. The distributable
-ZIP is written to `build/naruto-mobile-chrome-extension.zip` and copied to
-`web/hosted-dist/naruto-mobile-chrome-extension.zip`. Build the hosted Vite bundle
+ZIP is written to `build/naruto-mobile-chrome-extension-<version>.zip` and copied to
+`web/hosted-dist/naruto-mobile-chrome-extension.zip`. The hosted URL stays fixed;
+the portal and Archtree save it as `naruto-mobile-chrome-extension-<version>.zip`. Build the hosted Vite bundle
 **before** the extension; Vite clears its output directory.
 
 For local preview, open `chrome://extensions`, enable Developer mode, select
