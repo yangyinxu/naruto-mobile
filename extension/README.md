@@ -6,6 +6,13 @@ extracts bounded visible comments and open ShadowRoots. It does not request
 cookies, browser debugging, native messaging, or a local server. Cookies and
 Bilibili credentials are never exported to the portal or backend.
 
+<!-- @catalog -->
+**Contents**
+
+- [Build and preview](#build-and-preview)
+- [Protocol and recovery](#protocol-and-recovery)
+<!-- @end-catalog -->
+
 ## Build and preview
 
 Use Node.js 24 and the repository's installed dependencies:
@@ -166,7 +173,7 @@ the user's own action; the extension does not bypass them.
 Tests use synthetic DOM and mocked Chrome APIs, never a real account:
 
 ```powershell
-npx tsx --test test/browserExtension.test.ts test/browserPageReadiness.test.ts
+npx tsx --test test/browserExtension/browserExtension.test.ts test/browserExtension/browserPageReadiness.test.ts
 npm run build:server
 node scripts/build-extension.mjs
 node scripts/smoke-browser-extension.mjs

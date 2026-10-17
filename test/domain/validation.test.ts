@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {normalizeResearchRequest, RequestValidationError} from '../src/domain/validation';
+import {normalizeResearchRequest, RequestValidationError} from '../../src/domain/validation';
 
 test('normalizes the beginner defaults and deduplicates keywords', () => {
   const request = normalizeResearchRequest({

@@ -3,8 +3,8 @@ import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {ContentRecord, OpinionRecord, ResearchRequest} from '../src/domain/types';
-import {FileRunStore} from '../src/infrastructure/fileRunStore';
+import {ContentRecord, OpinionRecord, ResearchRequest} from '../../src/domain/types';
+import {FileRunStore} from '../../src/infrastructure/fileRunStore';
 
 const request: ResearchRequest = {
   name: '明文溯源测试',

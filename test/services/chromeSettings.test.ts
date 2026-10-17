@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {apps} from 'open';
-import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../src/services/chromeSettings';
+import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../../src/services/chromeSettings';
 
 test('opens the protected Chrome connection page in Google Chrome', async () => {
   const calls: Array<{target: string; options: {app: {name: string | readonly string[]; arguments: readonly string[]}; wait: boolean}}> = [];

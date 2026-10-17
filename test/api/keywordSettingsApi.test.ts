@@ -3,11 +3,11 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {createApp} from '../src/api/app';
-import {AppConfig} from '../src/config';
-import {FileRunStore} from '../src/infrastructure/fileRunStore';
-import {readSavedKeywords, saveKeywords} from '../src/services/dataRootSettings';
-import {RunManager} from '../src/services/runManager';
+import {createApp} from '../../src/api/app';
+import {AppConfig} from '../../src/config';
+import {FileRunStore} from '../../src/infrastructure/fileRunStore';
+import {readSavedKeywords, saveKeywords} from '../../src/services/dataRootSettings';
+import {RunManager} from '../../src/services/runManager';
 
 test('saves keyword preferences through the API and restores them in a new application', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'naruto-keyword-api-'));

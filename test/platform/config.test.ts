@@ -3,7 +3,7 @@ import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {loadAppConfig, resolveEnvFileCandidates} from '../src/config';
+import {loadAppConfig, resolveEnvFileCandidates} from '../../src/config';
 
 test('portable build checks beside the launcher and its parent for .env', () => {
   const unrelated = join(tmpdir(), 'naruto-portable-config-fixture', 'unrelated');

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {ContentRecord, OpinionRecord} from '../src/domain/types';
-import {cleanOpinions, normalizeText} from '../src/processing/cleaner';
-import {RuleClassifier} from '../src/processing/ruleClassifier';
+import {ContentRecord, OpinionRecord} from '../../src/domain/types';
+import {cleanOpinions, normalizeText} from '../../src/processing/cleaner';
+import {RuleClassifier} from '../../src/processing/ruleClassifier';
 
 const content: ContentRecord = {
   id: 'BV1',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {isResearchToolRunning, RESEARCH_APP_ID} from '../src/services/existingInstance';
+import {isResearchToolRunning, RESEARCH_APP_ID} from '../../src/services/existingInstance';
 
 const jsonResponse = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
   status,

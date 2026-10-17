@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {inContentWindow, parseBilibiliDate} from '../src/domain/publishedDate';
+import {inContentWindow, parseBilibiliDate} from '../../src/domain/publishedDate';
 
 // 2026-10-17 23:22 China Standard Time.
 const now = Date.UTC(2026, 9, 17, 15, 22);

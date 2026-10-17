@@ -4,11 +4,11 @@ import {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {createApp} from '../src/api/app';
-import {AppConfig} from '../src/config';
-import {FileRunStore} from '../src/infrastructure/fileRunStore';
-import {ArchtreeAuthService, StoredArchtreeSession} from '../src/services/archtreeAuth';
-import {RunManager} from '../src/services/runManager';
+import {createApp} from '../../src/api/app';
+import {AppConfig} from '../../src/config';
+import {FileRunStore} from '../../src/infrastructure/fileRunStore';
+import {ArchtreeAuthService, StoredArchtreeSession} from '../../src/services/archtreeAuth';
+import {RunManager} from '../../src/services/runManager';
 
 const token = (label: string) => `${label}-${'x'.repeat(48)}`;
 

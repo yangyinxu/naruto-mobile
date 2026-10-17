@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {decisionsTriageBody, parseDecisionsTriage} from '../src/processing/decisionsTriage';
-import {decisionsResponse} from './fixtures/decisionsResponse';
+import {decisionsTriageBody, parseDecisionsTriage} from '../../src/processing/decisionsTriage';
+import {decisionsResponse} from '../fixtures/decisionsResponse';
 
 const batch = [{opinionId: 'first'}, {opinionId: 'second'}];
 test('builds named independent questions with only Decisions-supported parameters', () => {

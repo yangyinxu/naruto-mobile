@@ -20,8 +20,10 @@
     "dev": "tsx watch src/server.ts",
     "dev:web": "npm run dev --workspace @naruto-mobile/web",
     "start": "tsx src/server.ts",
-    "test": "npm run test:server && npm run test:web",
-    "test:server": "tsx --test test/**/*.test.ts",
+    "test": "npm run catalog:check && npm run test:server && npm run test:web",
+    "catalog:check": "node scripts/build-catalogs.mjs --check",
+    "catalog:generate": "node scripts/build-catalogs.mjs",
+    "test:server": "tsx --test 'test/**/*.test.ts'",
     "test:web": "npm run test --workspace @naruto-mobile/web",
     "eval:ai": "tsx src/tools/evaluateAiClassifier.ts"
   },
