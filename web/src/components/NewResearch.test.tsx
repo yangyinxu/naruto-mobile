@@ -21,6 +21,8 @@
  *     - puts the beginner Chrome guide in a prominent position
  *     - requires a logged-in Chrome connection for live research but not demo mode
  *     - locks connection actions until Chrome has completely disconnected
+ *     - warns when the connected browser extension is older than the shipped version
+ *     - never shows an extension version warning for the desktop Chrome connection
  *     - lets the user open the native data location picker
  *     - logs into any Archtree account without exposing an OpenAI key
  *     - shows the signed-in Archtree account and can log out
@@ -30,6 +32,7 @@ import {fireEvent, render, screen} from '@testing-library/react';
 import {describe, expect, it, vi} from 'vitest';
 import {ChromeConnectionStatus} from '../types';
 import {NewResearch} from './NewResearch';
+import {latestExtensionVersion} from '../browser/extensionVersion';
 
 const settings = {
   apiVersion: 5,
@@ -290,6 +293,21 @@ describe('NewResearch', () => {
     expect(screen.getByRole('button', {name: /正在断开 Chrome/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /^断开$/})).toBeDisabled();
     expect(screen.getByRole('button', {name: /连接 Chrome 后开始/})).toBeDisabled();
+  });
+
+  it('warns when the connected browser extension is older than the shipped version', () => {
+    const browserSettings = {...settings, runtime: 'browser' as const, dataRoot: '当前浏览器本地存储'};
+    const {rerender} = render(<NewResearch {...chromeProps()} chromeStatus={{...chromeProps().chromeStatus, extensionVersion: '0.0.1'}} settings={browserSettings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.getByText(/当前扩展 0\.0\.1 不是最新版本/)).toBeVisible();
+    rerender(<NewResearch {...chromeProps()} chromeStatus={{...chromeProps().chromeStatus, extensionVersion: latestExtensionVersion}} settings={browserSettings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.queryByText(/不是最新版本/)).not.toBeInTheDocument();
+    rerender(<NewResearch {...chromeProps()} chromeStatus={{...chromeProps().chromeStatus, state: 'not_ready', connected: false, message: '请安装并启用 Chrome 扩展。'}} settings={browserSettings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.queryByText(/最新版本为/)).not.toBeInTheDocument();
+  });
+
+  it('never shows an extension version warning for the desktop Chrome connection', () => {
+    render(<NewResearch {...chromeProps()} settings={settings} busy={false} selectingDataRoot={false} onStart={vi.fn()} onSelectDataRoot={vi.fn()} onOpenGuide={vi.fn()}/>);
+    expect(screen.queryByText(/最新版本为/)).not.toBeInTheDocument();
   });
 
   it('lets the user open the native data location picker', () => {

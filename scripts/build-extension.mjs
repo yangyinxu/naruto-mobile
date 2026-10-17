@@ -26,8 +26,12 @@ const archive = new Promise((resolveArchive, reject) => {
 });
 zip.end();
 const contents = await archive;
-await writeFile(join(root, 'build', 'naruto-mobile-chrome-extension.zip'), contents);
+// The hosted copy keeps Archtree's fixed URL; the local artifact carries the version in its name.
+const {version} = JSON.parse(manifest.toString('utf8'));
+const localArchive = join(root, 'build', `naruto-mobile-chrome-extension-${version}.zip`);
+await writeFile(localArchive, contents);
 await mkdir(dirname(hostedArchive), {recursive: true});
 await writeFile(hostedArchive, contents);
 console.log(`Extension: ${output}`);
+console.log(`Extension ZIP: ${localArchive}`);
 console.log(`Hosted download: ${hostedArchive}`);
