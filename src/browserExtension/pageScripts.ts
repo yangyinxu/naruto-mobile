@@ -67,7 +67,10 @@ export function readSearchPage(type: 'video' | 'dynamic' | 'article') {
   });
 }
 
-/** Captures bounded visible DOM and open ShadowRoots without requesting private APIs. */
+/** Reads a source's public comments through the comment API the page itself uses,
+ * so collection never depends on the tool window being visible or rendered; bounded
+ * visible DOM and open ShadowRoots remain the fallback when that request fails.
+ * Chrome serializes this function alone, so every helper (including MD5) lives inside it. */
 export async function readContentPage(): Promise<ContentSnapshot> {
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   const clean = (value: string | null | undefined) => value?.replace(/\s+/g, ' ').trim() || undefined;
@@ -161,15 +164,131 @@ export async function readContentPage(): Promise<ContentSnapshot> {
     }
     return roots;
   };
+  // MAIN-world reads of the page's own public state identify the comment area and
+  // carry exact publish times: videos (videoData), 专栏 (readInfo) and opus pages (detail).
+  const view = document.defaultView as unknown as {__INITIAL_STATE__?: Record<string, unknown>;
+    fetch?: typeof fetch; localStorage?: Storage} | null;
+  const state = view?.__INITIAL_STATE__ || {};
+  const field = (value: unknown, key: string) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+  const md5 = (input: string) => {
+    const bytes = new TextEncoder().encode(input);
+    const words = new Array<number>((((bytes.length + 8) >>> 6) + 1) * 16).fill(0);
+    for (let i = 0; i < bytes.length; i += 1) words[i >> 2] |= bytes[i] << ((i % 4) * 8);
+    words[bytes.length >> 2] |= 0x80 << ((bytes.length % 4) * 8);
+    words[words.length - 2] = bytes.length * 8;
+    const shifts = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+    const constants = Array.from({length: 64}, (_value, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 2 ** 32) | 0);
+    let [a0, b0, c0, d0] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+    for (let block = 0; block < words.length; block += 16) {
+      let [a, b, c, d] = [a0, b0, c0, d0];
+      for (let i = 0; i < 64; i += 1) {
+        const round = i >> 4;
+        const f = round === 0 ? (b & c) | (~b & d) : round === 1 ? (d & b) | (~d & c) : round === 2 ? b ^ c ^ d : c ^ (b | ~d);
+        const g = round === 0 ? i : round === 1 ? (5 * i + 1) % 16 : round === 2 ? (3 * i + 5) % 16 : (7 * i) % 16;
+        const sum = (a + f + constants[i] + words[block + g]) | 0;
+        const shift = shifts[round * 4 + (i % 4)];
+        [a, d, c] = [d, c, b];
+        b = (b + ((sum << shift) | (sum >>> (32 - shift)))) | 0;
+      }
+      [a0, b0, c0, d0] = [(a0 + a) | 0, (b0 + b) | 0, (c0 + c) | 0, (d0 + d) | 0];
+    }
+    return [a0, b0, c0, d0].map((word) => Array.from({length: 4}, (_value, i) => ((word >>> (i * 8)) & 0xff).toString(16).padStart(2, '0')).join('')).join('');
+  };
+  const apiJson = async (url: string) => {
+    if (typeof view?.fetch !== 'function') return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await view.fetch(url, {credentials: 'include', signal: controller.signal});
+      if (!response.ok) return undefined;
+      const value: unknown = await response.json();
+      return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+    } catch { return undefined; } finally { clearTimeout(timer); }
+  };
+  // Bilibili's WBI scheme signs each request with keys the page caches after its own nav call.
+  const wbiMixinKey = async () => {
+    const keyOf = (url: unknown) => typeof url === 'string' ? url.slice(url.lastIndexOf('/') + 1).split('.')[0] : '';
+    let cached = '';
+    try { cached = view?.localStorage?.getItem('wbi_img_urls') || ''; } catch { /* Storage may be blocked; use nav instead. */ }
+    let [img, sub] = cached.split('-https://').map((url, index) => keyOf(index ? `https://${url}` : url));
+    if (!/^[0-9a-f]{32}$/.test(img || '') || !/^[0-9a-f]{32}$/.test(sub || '')) {
+      const nav = field(field(await apiJson('https://api.bilibili.com/x/web-interface/nav'), 'data'), 'wbi_img');
+      [img, sub] = [keyOf(field(nav, 'img_url')), keyOf(field(nav, 'sub_url'))];
+    }
+    if (!/^[0-9a-f]{32}$/.test(img || '') || !/^[0-9a-f]{32}$/.test(sub || '')) return undefined;
+    const raw = img + sub;
+    return [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+      37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52]
+      .map((index) => raw[index]).join('').slice(0, 32);
+  };
+  const commentArea = () => {
+    const aid = platformId(field(field(state, 'videoData'), 'aid'), field(state, 'aid'));
+    if (/^\/video\//.test(location.pathname) && aid) return {oid: aid, type: '1'};
+    const cv = location.pathname.match(/^\/read\/cv(\d{1,20})/)?.[1];
+    if (cv) return {oid: cv, type: '12'};
+    const basic = field(field(state, 'detail'), 'basic');
+    const oid = platformId(field(basic, 'comment_id_str'));
+    const type = platformId(field(basic, 'comment_type'));
+    return oid && type ? {oid, type} : undefined;
+  };
+  // Hot-sorted public comments with their inline replies, at most four pages and 80 records.
+  // Any failure (including risk control) returns undefined so the visible DOM read decides instead.
+  const readCommentApi = async (): Promise<'loaded' | 'empty' | undefined> => {
+    const area = commentArea();
+    const mixinKey = area && await wbiMixinKey();
+    if (!area || !mixinKey) return undefined;
+    let offset = '';
+    for (let page = 0; page < 4 && comments.size < 80; page += 1) {
+      const params: Record<string, string> = {oid: area.oid, type: area.type, mode: '3', plat: '1', web_location: '1315875',
+        pagination_str: JSON.stringify({offset}), wts: String(Math.floor(Date.now() / 1000))};
+      const query = Object.keys(params).sort().map((key) =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(params[key].replace(/[!'()*]/g, ''))}`).join('&');
+      const value = await apiJson(`https://api.bilibili.com/x/v2/reply/wbi/main?${query}&w_rid=${md5(query + mixinKey)}`);
+      // 12002: the comment area is closed, which is a confirmed empty source.
+      if (value?.code === 12002 && page === 0) return 'empty';
+      if (value?.code !== 0) return page === 0 ? undefined : 'loaded';
+      const data = field(value, 'data');
+      const top = field(data, 'top_replies');
+      const replies = field(data, 'replies');
+      for (const reply of [...(page === 0 && Array.isArray(top) ? top : []), ...(Array.isArray(replies) ? replies : [])]) {
+        for (const item of [reply, ...(Array.isArray(field(reply, 'replies')) ? field(reply, 'replies') as unknown[] : [])]) {
+          const body = clean(String(field(field(item, 'content'), 'message') ?? ''));
+          if (!body || body.length < 3 || body.length > 1200 || noise.has(body) || comments.size >= 80) continue;
+          const member = field(item, 'member');
+          const authorUid = platformId(field(member, 'mid'), field(item, 'mid_str'), field(item, 'mid'));
+          const sourceRecordId = platformId(field(item, 'rpid_str'), field(item, 'rpid'));
+          const parentSourceRecordId = platformId(field(item, 'parent_str'), field(item, 'parent'), field(item, 'root_str'), field(item, 'root'));
+          const authorName = clean(typeof field(member, 'uname') === 'string' ? field(member, 'uname') as string : undefined)?.slice(0, 200);
+          const epoch = Number(field(item, 'ctime'));
+          const timeDesc = field(field(item, 'reply_control'), 'time_desc');
+          comments.set(`${sourceRecordId || ''}\0${authorUid || authorName || 'anonymous'}\0${body}`, {text: body, authorUid, authorName,
+            ...(authorUid ? {authorProfileUrl: `https://space.bilibili.com/${authorUid}`} : {}),
+            sourceRecordId, parentSourceRecordId,
+            publishedAtText: clean(typeof timeDesc === 'string' ? timeDesc : undefined)?.slice(0, 100),
+            ...(Number.isFinite(epoch) && epoch > 0 && epoch < 10_000_000_000 ? {publishedAtEpochSeconds: epoch} : {}),
+            likes: Number.isSafeInteger(field(item, 'like')) ? Math.max(0, field(item, 'like') as number) : 0,
+            replies: Number.isSafeInteger(field(item, 'rcount')) ? Math.max(0, field(item, 'rcount') as number) : 0,
+            isReply: Boolean(parentSourceRecordId && parentSourceRecordId !== sourceRecordId)});
+        }
+      }
+      const cursor = field(data, 'cursor');
+      if (page === 0 && !comments.size && (field(cursor, 'all_count') === 0 || field(cursor, 'is_end') === true)) return 'empty';
+      const next = field(field(cursor, 'pagination_reply'), 'next_offset');
+      if (field(cursor, 'is_end') === true || typeof next !== 'string' || !next) break;
+      offset = next;
+    }
+    return comments.size ? 'loaded' : undefined;
+  };
+  const apiState = verificationRequired() ? undefined : await readCommentApi();
   // Bilibili mounts the comment element lazily, often after the first scroll.
   // Reacquire it on every pass and keep incomplete reads retryable at the worker.
   const deadline = Date.now() + 9000;
-  let commentState: ContentSnapshot['commentState'] = 'not_ready';
+  let commentState: ContentSnapshot['commentState'] = apiState ?? 'not_ready';
   let previousCount = 0;
   let stableRounds = 0;
   let expanded = 0;
   const clicked = new WeakSet<Element>();
-  for (let round = 0; round < 24; round += 1) {
+  for (let round = 0; !apiState && round < 24; round += 1) {
     if (verificationRequired()) { commentState = 'verification_required'; break; }
     const roots = scan();
     if (comments.size > 0) {
@@ -217,10 +336,6 @@ export async function readContentPage(): Promise<ContentSnapshot> {
     else document.documentElement.scrollIntoView?.({block: 'end', behavior: 'instant'});
     await wait(Math.min(400, Math.max(0, deadline - Date.now())));
   }
-  // MAIN-world reads of the page's own public state carry exact publish times:
-  // videos (videoData.pubdate), 专栏 (readInfo.publish_time) and opus pages (module_author.pub_ts).
-  const state = (document.defaultView as unknown as {__INITIAL_STATE__?: Record<string, unknown>} | null)?.__INITIAL_STATE__ || {};
-  const field = (value: unknown, key: string) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
   const modules = field(field(state, 'detail'), 'modules');
   const opusAuthor = Array.isArray(modules) ? modules.map((item) => field(item, 'module_author')).find(Boolean) : undefined;
   const epoch = [field(field(state, 'videoData'), 'pubdate'), field(field(state, 'readInfo'), 'publish_time'),

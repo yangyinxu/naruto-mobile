@@ -222,3 +222,29 @@ Sources without a confirmable date are skipped with a warning. The retired 动�
 search page is replaced by 专栏 article search (`/read/cv…`, newest first), and
 articles may be read through Bilibili's opus reader. Each search target first
 receives an equal share of the source limit.
+
+Version `0.1.10` stops grouping collector tabs and drops the `tabGroups`
+permission. The dedicated unfocused collection window already keeps tool tabs
+apart from the user's own windows, and repeated `火影调查` groups were tedious to
+clean up. Tool tabs stay ungrouped; a tab the user drags into a group (or into
+another window) leaves tool ownership and is never navigated or closed. A new
+collection tab is admitted only while an owned tab still anchors the window.
+
+Version `0.1.11` stops pausing unattended runs. When every discovered source has
+been tried once, sources that failed (comments not loaded, verification
+required, page changes) are skipped with a warning and the run ends as
+`source_exhausted`, so the portal analyzes what was collected. An unexpected
+collection error likewise ends for analysis once any source was saved. The run
+pauses only on a user pause, a closed portal, or when nothing was collected; the
+skipped sources stay in the checkpoint.
+
+Version `0.1.12` reads comments through the comment API the Bilibili page itself
+uses (`x/v2/reply/wbi/main`, hot order, inline replies, at most four pages and 80
+records), called from the source page's MAIN world with the user's own session.
+Collection therefore no longer depends on the investigation window being visible:
+Chrome stops rendering a fully covered window, which left lazily mounted comment
+areas unloaded. Requests carry Bilibili's WBI signature, using keys the page
+cached in `localStorage` (`wbi_img_urls`) or, failing that, from `nav`. An empty
+result or a closed comment area (`12002`) is a confirmed empty source. Any other
+failure, including risk control, is never retried around: the visible DOM read
+above decides instead. Only public comment fields already collected are kept.

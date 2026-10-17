@@ -182,3 +182,14 @@ they are queued. The retired 动态 search (Bilibili no longer has that page) is
 replaced by 专栏 article search sorted newest first, and each search gets an equal
 share of the source limit so videos cannot crowd out articles. The portal
 requires this version before starting or resuming live collection.
+Extension `0.1.10` no longer creates the orange `火影调查` tab group and no longer
+requests the `tabGroups` permission. Collection still runs in its own new
+unfocused window, and cleanup still closes only verified owned tabs. Replace the
+extension files, reload it in Chrome, and refresh the portal.
+Extension `0.1.11` no longer pauses a run that still has time left: sources that fail once
+are skipped and the run proceeds to analysis of what it collected. It pauses only
+for a user pause, a closed portal, or when no source could be read at all.
+Extension `0.1.12` reads comments through Bilibili's own comment API from the
+source page instead of waiting for the comment area to render, so a covered or
+background collection window no longer leaves comments unloaded. The visible-page
+read remains the fallback whenever that request fails.
