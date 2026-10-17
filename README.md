@@ -67,7 +67,7 @@ Chrome 连接只监听当前电脑的 `127.0.0.1`。不同电脑会在运行时�
 - Transient Node and Chrome fetch failures, including interrupted response bodies, retry up to six attempts per batch with exponential backoff. Persistent detail failures preserve completed cache records for explicit resume; cancellation, account changes, and unrelated programming errors do not trigger transport retries.
 - 提前终止后直接清洗，并通过 Luna 结构化筛选后生成报告
 - 全量原始数据保存在本地；本地只剔除可确定的纯表情、纯数字等硬噪声
-- Decisions API（gpt-6-luna）按意见 ID 分别提问，做“详细分析 / 不确定 / 明确跳过”高召回初筛；仅跳过置信度与类别概率均达到 0.95 的非产品反馈，低置信度、拒答、格式异常或请求失败均进入 gpt-6-luna medium 详细分析
+- Decisions API（gpt-6-luna）按意见 ID 分别提问，做“详细分析 / 不确定 / 明确跳过”高召回初筛；仅跳过置信度与类别概率均达到 0.85 的非产品反馈，低置信度、拒答、格式异常或请求失败均进入 gpt-6-luna medium 详细分析
 - 报告分别显示 Decisions 初筛和 Luna 详析的调用数与预估费用；详析按普通输入、缓存读取、缓存写入和输出分别计费
 - AI 将各来源的意见填入完整批次，每条保留独立语境；限速并发、按服务端提示退避重试并缓存最终结果，可恢复处理数千条意见
 - AI 输出强洞察、弱信号、无价值内容、主题级态度、行为意图和逐字证据
