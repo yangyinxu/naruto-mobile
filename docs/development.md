@@ -108,7 +108,9 @@ npm run build:hosted
 ```
 
 Outputs are `web/hosted-dist/`, `build/chrome-extension/`, and
-`build/naruto-mobile-chrome-extension.zip`. These generated artifacts remain
+`build/naruto-mobile-chrome-extension-<version>.zip`. The hosted copy keeps the
+fixed name `naruto-mobile-chrome-extension.zip` for Archtree; Archtree names the
+saved download after the extension version. These generated artifacts remain
 ignored. `npm run build` continues to produce the desktop bundle in `web/dist/`.
 
 ### Required Archtree synchronization after every `main` push
