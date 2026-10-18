@@ -157,3 +157,4 @@ test-results/
 
 # Local design and visual QA artifacts
 .impeccable/
+output/
