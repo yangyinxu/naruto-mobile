@@ -1281,8 +1281,8 @@ html[data-skin="shinobi"] .app-loading {
   bottom: 18px;
   width: 37px;
   height: 31px;
-  background-position: -6px -9px;
-  background-size: 48px 48px;
+  background-position: 0 -3px;
+  background-size: 37px 37px;
 }
 
 .skin-shinobi .topic-detail-header::after {
@@ -1290,8 +1290,8 @@ html[data-skin="shinobi"] .app-loading {
   right: 32px;
   width: 28px;
   height: 23px;
-  background-position: -4px -7px;
-  background-size: 36px 36px;
+  background-position: 0 -2px;
+  background-size: 27px 27px;
 }
 
 /* styles.css scopes its narrow top-bar rules to .skin-classic; the skin repeats them so both bars fold alike. */
