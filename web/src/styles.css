@@ -36,8 +36,8 @@
  *                    --progress-stage-bg
  * Keyframes: archive-spin, stage-activity-pulse, spin, pulse
  * Media queries: (prefers-reduced-motion: reduce); (max-width: 1599px); (max-width: 1279px);
- *                (max-width: 1100px); (max-width: 351px); (max-width: 760px); (max-width: 900px);
- *                (max-width: 650px); (max-width: 1120px)
+ *                (max-width: 1100px); (max-width: 351px); (max-width: 760px); (650px < width <= 760px);
+ *                (max-width: 900px); (max-width: 650px); (max-width: 1120px)
  * @end-catalog */
 
 :root {
@@ -73,16 +73,15 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .brand div { display: flex; flex-direction: column; line-height: 1.05; }
 .brand strong { font-size: 16px; letter-spacing: .04em; }
 .brand small { margin-top: 5px; font-size: 10px; color: var(--muted); letter-spacing: .15em; }
-.topbar nav { display: flex; align-self: stretch; gap: 8px; }
-.topbar nav button { border: 0; background: none; color: #6e665b; padding: 0 16px; display: flex; align-items: center; gap: 8px; position: relative; font-size: 14px; }
+/* Tabs touch so filled hover and active states never leave a gap; the spacing lives in their padding. */
+.topbar nav { display: flex; align-self: stretch; gap: 0; }
+.topbar nav button { border: 0; background: none; color: #6e665b; padding: 0 20px; display: flex; align-items: center; gap: 8px; position: relative; font-size: 14px; }
 .topbar nav button svg { width: 17px; }
 .topbar nav button.active { color: var(--orange-dark); font-weight: 700; }
-.topbar nav button.active::after { content: ""; height: 3px; border-radius: 3px 3px 0 0; background: var(--orange); position: absolute; left: 14px; right: 14px; bottom: 0; }
+.topbar nav button.active::after { content: ""; height: 3px; border-radius: 3px 3px 0 0; background: var(--orange); position: absolute; left: 18px; right: 18px; bottom: 0; }
 .topbar nav i { min-width: 19px; height: 19px; display: grid; place-items: center; background: #eee6d9; border-radius: 10px; font-size: 10px; font-style: normal; }
-.topbar nav .guide-nav { align-self: center; height: 44px; padding-inline: 13px; border-radius: 12px; color: #9e3e20; background: #fff1e6; }
-.topbar nav .guide-nav:hover { background: #ffe8d7; }
-.topbar nav .guide-nav.active { background: #ffe4d1; }
-.topbar nav .guide-nav.active::after { left: 12px; right: 12px; bottom: -17px; }
+/* A full-height tab like the others; the colour and the badge are what single it out. */
+.topbar nav .guide-nav { color: #9e3e20; }
 .guide-nav-label { white-space: nowrap; }
 .guide-nav-label b { font-weight: inherit; }
 .guide-nav-badge { padding: 3px 6px; border-radius: 8px; color: white; background: var(--orange); font-size: 11px; font-weight: 800; white-space: nowrap; }
@@ -379,14 +378,21 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
 }
 
 @media (max-width: 760px) {
-  .skin-classic .topbar { gap: 14px; }
+  .skin-classic .topbar { gap: 10px; }
   .skin-classic .brand strong { white-space: nowrap; }
   .skin-classic .topbar nav button svg { display: none; }
 }
 
+/* Just above the two-row phone bar, a signed-in bar only fits on one row with tighter edges. */
+@media (650px < width <= 760px) {
+  .skin-classic .topbar { padding-inline: 14px; }
+  /* The desktop's longer "Chrome 教程" shortens to "教程", as it already does on phones. */
+  .guide-nav-label b { display: none; }
+}
+
 @media (max-width: 900px) {
   .skin-classic .brand small { display: none; }
-  .skin-classic .topbar nav button { padding: 0 10px; }
+  .skin-classic .topbar nav button { padding: 0 14px; }
   .progress-panel { grid-template-columns: 220px 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .run-row { grid-template-columns: 1fr; }
@@ -405,7 +411,7 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
   .topbar { height: auto; padding: 10px 14px 0; flex-wrap: wrap; gap: 4px 12px; }
   .brand small, .local-pill, .topbar nav button svg, .skin-picker span { display: none; }
   .topbar nav { order: 3; width: 100%; height: 46px; margin: 0; overflow-x: auto; scrollbar-width: none; }
-  .topbar nav button { flex: 0 0 auto; padding: 0 8px; font-size: 11px; white-space: nowrap; }
+  .topbar nav button { flex: 0 0 auto; padding: 0 12px; font-size: 11px; white-space: nowrap; }
   .brand > span { width: 34px; height: 34px; }
   .progress-panel { grid-template-columns: 1fr; }
   .time-display { text-align: center; align-items: center; }
@@ -438,9 +444,6 @@ kbd { min-width: 26px; padding: 2px 6px; border: 1px solid #cfc5b7; border-botto
   .report-toolbar > div { flex-direction: column; }
   .markdown-report { padding: 28px 20px; overflow-x: auto; }
   .guide-nav-label b { display: none; }
-  .topbar nav .guide-nav { height: auto; padding: 0 8px; background: none; }
-  .topbar nav .guide-nav.active { background: none; }
-  .topbar nav .guide-nav.active::after { left: 6px; right: 6px; bottom: 0; }
   .guide-page { padding-top: 24px; }
   .guide-hero { padding: 27px 22px; align-items: flex-start; flex-direction: column; gap: 22px; }
   .guide-hero h1 { font-size: 34px; }

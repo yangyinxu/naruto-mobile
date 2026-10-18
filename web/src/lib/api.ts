@@ -10,6 +10,7 @@ import {
   AppSettings,
   ChromeConnectionStatus,
   KeywordSettings,
+  ResearchPreferences,
   ReportData,
   ResearchRequest,
   RunEvent,
@@ -48,6 +49,10 @@ const desktopApi = {
   settings: () => request<AppSettings>('/api/settings'),
   saveKeywords: (settings: KeywordSettings) => request<KeywordSettings>('/api/settings/keywords', {
     method: 'PUT', body: JSON.stringify(settings)
+  }),
+  // keepalive lets a save started while the window closes still reach the local server.
+  savePreferences: (preferences: ResearchPreferences, options?: {keepalive?: boolean}) => request<ResearchPreferences>('/api/settings/preferences', {
+    method: 'PUT', body: JSON.stringify(preferences), keepalive: options?.keepalive
   }),
   loginAnalysis: (identifier: string, password: string) => request<{
     signedIn: true;

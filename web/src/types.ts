@@ -2,7 +2,7 @@
  * Exports
  *   Types: RunState, RunProgressPhase, AiAnalysisActivity, AiTokenUsage, ResearchRequest, RunManifest,
  *          ReportSentiment, ReportEvidence, ReportTopic, ReportData, RunEvent, ContentRecord, OpinionRecord,
- *          RunRecordsResponse, KeywordSettings, AppSettings, ChromeConnectionStatus
+ *          RunRecordsResponse, KeywordSettings, ResearchPreferences, AppSettings, ChromeConnectionStatus
  * Internal
  *   Types: RecordPageBase
  * @end-catalog */
@@ -277,6 +277,10 @@ export interface KeywordSettings {
   keywords: string[];
   useKeywordPrefix: boolean;
 }
+
+/** Form choices saved locally the moment they change; keywords and their prefix switch travel together. */
+export type ResearchPreferences = Partial<KeywordSettings & Pick<ResearchRequest, 'durationMinutes' | 'contentWindowDays'
+  | 'includeVideos' | 'includeArticles' | 'mode' | 'browserWindowCount' | 'maxSources'>>;
 
 export interface AppSettings {
   /** Selects browser storage and extension guidance without changing desktop behavior. */

@@ -3,12 +3,14 @@
  *   Functions: browserRuntime, subscribeRun
  *   Constants: browserApi
  * Internal
- *   Functions: decodeChromeStatus, downloadArchive
- *   Constants: defaultKeywords, defaults
+ *   Functions: normalizeKeywords, savedPreferences, readJournal, writeJournal, clearJournal, savedKeywords,
+ *              decodeChromeStatus, downloadArchive, writePreferences, replayJournal
+ *   Constants: defaultKeywords, defaults, JOURNAL
  *   Variables: singleton
  * @end-catalog */
 
-import type {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest, RunManifest, RunRecordsResponse} from '../types';
+import type {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchPreferences, ResearchRequest, RunManifest, RunRecordsResponse} from '../types';
+import {mergeResearchPreferences, salvageResearchPreferences} from '../../../src/domain/validation';
 import {ACCOUNT_URL, BrowserAnalysisSession, LOGIN_URL} from './auth';
 import {decodeRunArchive, encodeRunArchive} from './archive';
 import {ChromeExtensionBridge} from './bridge';
@@ -21,6 +23,57 @@ const defaults: AppSettings['defaults'] = {durationMinutes: 5, contentWindowDays
   includeVideos: true, includeArticles: true, mode: 'live', browserVisible: true, browserWindowCount: 4,
   maxSources: 20, useKeywordPrefix: true};
 let singleton: BrowserResearchRuntime | undefined;
+
+const normalizeKeywords = (value: KeywordSettings): KeywordSettings => {
+  if (!Array.isArray(value.keywords) || !value.keywords.length || value.keywords.length > 12
+    || value.keywords.some((keyword) => typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40)
+    || typeof value.useKeywordPrefix !== 'boolean') throw new Error('关键词设置格式不正确。');
+  return {keywords: [...new Set(value.keywords.map((keyword) => keyword.trim()))], useKeywordPrefix: value.useKeywordPrefix};
+};
+
+/** A damaged saved record loses only its bad fields instead of blocking the page. */
+const savedPreferences = async () => salvageResearchPreferences(await browserRuntime().store.getSetting('preferences'));
+
+/**
+ * Each save first lands here synchronously, because a page that is closing cannot finish an IndexedDB
+ * read-then-write. The next visit replays whatever a save left behind before it reads the defaults.
+ */
+const JOURNAL = 'naruto-research-unsaved-preferences';
+
+const readJournal = (): Record<string, unknown> | undefined => {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(JOURNAL) ?? 'null');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const writeJournal = (value: Record<string, unknown>) => {
+  try {
+    window.localStorage.setItem(JOURNAL, JSON.stringify(value));
+  } catch {
+    // Private windows may refuse; the IndexedDB save below still runs.
+  }
+};
+
+/** Cleared only if no later save has added to it meanwhile; that save clears it when it lands. */
+const clearJournal = (written: Record<string, unknown>) => {
+  try {
+    if (window.localStorage.getItem(JOURNAL) === JSON.stringify(written)) window.localStorage.removeItem(JOURNAL);
+  } catch {
+    // Nothing to clear.
+  }
+};
+
+const savedKeywords = async (): Promise<KeywordSettings | undefined> => {
+  const value = await browserRuntime().store.getSetting<Partial<KeywordSettings>>('keywords');
+  try {
+    return value ? normalizeKeywords({keywords: value.keywords ?? [], useKeywordPrefix: value.useKeywordPrefix ?? true}) : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /** Initialize lazily so the desktop bundle keeps its original localhost API path. */
 export const browserRuntime = () => singleton ??= new BrowserResearchRuntime(new BrowserRunStore(),
@@ -49,28 +102,73 @@ const downloadArchive = (bytes: Uint8Array, filename: string) => {
   try {anchor.click();} finally {anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60_000);}
 };
 
+const writePreferences = async (update: ResearchPreferences): Promise<ResearchPreferences> => {
+  const runtime = browserRuntime();
+  const preferences = mergeResearchPreferences(await savedPreferences(), update);
+  const changesKeywords = update.keywords !== undefined || update.useKeywordPrefix !== undefined;
+  const saved = await savedKeywords();
+  const keywords = changesKeywords ? normalizeKeywords({keywords: update.keywords ?? saved?.keywords ?? [],
+    useKeywordPrefix: update.useKeywordPrefix ?? saved?.useKeywordPrefix ?? true}) : saved;
+  if (changesKeywords) await runtime.store.setSetting('keywords', keywords);
+  await runtime.store.setSetting('preferences', preferences);
+  return {...preferences, ...(keywords ?? {})};
+};
+
+/** A damaged leftover still applies its valid choices; the journal is cleared either way. */
+const replayJournal = async () => {
+  const journal = readJournal();
+  if (!journal) return;
+  try {
+    await writePreferences(journal as ResearchPreferences);
+  } catch {
+    // Keep every valid part: the form choices field by field, and the keywords if they are themselves valid.
+    let keywords: KeywordSettings | Record<string, never> = {};
+    try {
+      if (journal.keywords !== undefined) {
+        keywords = normalizeKeywords({keywords: journal.keywords as string[], useKeywordPrefix: (journal.useKeywordPrefix as boolean | undefined) ?? true});
+      }
+    } catch {
+      keywords = {};
+    }
+    await writePreferences({...salvageResearchPreferences(journal), ...keywords}).catch(() => undefined);
+  }
+  try {
+    window.localStorage.removeItem(JOURNAL);
+  } catch {
+    // Nothing to clear.
+  }
+};
+
 export const browserApi = {
   settings: async (): Promise<AppSettings> => {
     const runtime = browserRuntime();
     await runtime.initialize();
-    const keywords = await runtime.store.getSetting<KeywordSettings>('keywords');
+    await replayJournal();
+    const keywords = await savedKeywords();
+    const preferences = await savedPreferences();
     // A transient service error must not hide local reports or prevent ZIP backups.
     const [status] = await Promise.allSettled([runtime.analysis.status(), runtime.analysis.account()]);
     // Re-read the current identity after both requests: an intervening transition may have cleared it.
     const account = runtime.analysis.currentAccount;
     const configured = status.status === 'fulfilled' ? status.value.enabled : runtime.analysis.serviceEnabled ?? false;
     return {apiVersion: 11, runtime: 'browser', dataRoot: LOCAL_DATA_DESCRIPTION, dataRootLocked: true,
-      defaults: {...defaults, ...(keywords ?? {})}, analysis: {aiConfigured: configured && Boolean(account),
+      defaults: {...defaults, ...preferences, ...(keywords ?? {})}, analysis: {aiConfigured: configured && Boolean(account),
         loginRequired: !account, account, transport: 'proxy', model: 'gpt-6-luna', reasoningEffort: 'medium',
         maxConcurrentRequests: 12, batchSize: 10, liveMode: 'ai', demoMode: 'rule_demo'}};
   },
   saveKeywords: async (value: KeywordSettings): Promise<KeywordSettings> => {
-    if (!Array.isArray(value.keywords) || !value.keywords.length || value.keywords.length > 12
-      || value.keywords.some((keyword) => typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40)
-      || typeof value.useKeywordPrefix !== 'boolean') throw new Error('关键词设置格式不正确。');
-    const settings = {keywords: [...new Set(value.keywords.map((keyword) => keyword.trim()))], useKeywordPrefix: value.useKeywordPrefix};
+    const settings = normalizeKeywords(value);
     await browserRuntime().store.setSetting('keywords', settings);
     return settings;
+  },
+  /** Saved in this browser's IndexedDB, like a local save file; keywords keep their own record. */
+  savePreferences: async (update: ResearchPreferences): Promise<ResearchPreferences> => {
+    // Before the first await, so it happens even inside a pagehide handler.
+    const journal = {...readJournal(), ...update};
+    writeJournal(journal);
+    const saved = await writePreferences(update);
+    clearJournal(journal);
+    return saved;
   },
   loginAnalysis: async (_identifier: string, _password: string): Promise<never> => {
     window.location.assign(LOGIN_URL);

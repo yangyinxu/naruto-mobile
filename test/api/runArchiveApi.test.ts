@@ -89,7 +89,7 @@ test('shares a completed survey over ZIP HTTP and reads imported reports without
   const {server, base} = await startApi(manager, config);
   try {
     const settings = await (await fetch(`${base}/api/settings`)).json();
-    assert.equal(settings.apiVersion, 11);
+    assert.equal(settings.apiVersion, 12);
     assert.equal(settings.analysis.loginRequired, true);
     const archiveResponse = await fetch(`${base}/api/runs/${original.id}/archive`);
     assert.equal(archiveResponse.status, 200);

@@ -15,7 +15,7 @@ import {normalizeResearchRequest, RequestValidationError} from '../domain/valida
 import {buildReportData} from '../processing/reporter';
 import {CHROME_REMOTE_DEBUGGING_URL, openChromeRemoteDebugging} from '../services/chromeSettings';
 import {chooseDataDirectory} from '../services/dataDirectoryPicker';
-import {readSavedKeywords, saveDataRoot, saveKeywords} from '../services/dataRootSettings';
+import {readSavedPreferences, saveDataRoot, saveKeywords, savePreferences} from '../services/dataRootSettings';
 import {RESEARCH_API_VERSION, RESEARCH_APP_ID} from '../services/existingInstance';
 import {RunManager} from '../services/runManager';
 import {MAX_SURVEY_ARCHIVE_BYTES, RunArchiveError} from '../services/runArchive';
@@ -44,8 +44,9 @@ const mutationOriginGuard = (config: AppConfig) => (request: Request, response: 
 interface AppDependencies {
   chooseDataDirectory: typeof chooseDataDirectory;
   saveDataRoot: typeof saveDataRoot;
-  readSavedKeywords: typeof readSavedKeywords;
+  readSavedPreferences: typeof readSavedPreferences;
   saveKeywords: typeof saveKeywords;
+  savePreferences: typeof savePreferences;
   webRoot: string;
 }
 
@@ -56,8 +57,9 @@ export const createApp = (
 ) => {
   const openDataDirectoryPicker = dependencies.chooseDataDirectory ?? chooseDataDirectory;
   const persistDataRoot = dependencies.saveDataRoot ?? saveDataRoot;
-  const readKeywords = dependencies.readSavedKeywords ?? readSavedKeywords;
+  const readPreferences = dependencies.readSavedPreferences ?? readSavedPreferences;
   const persistKeywords = dependencies.saveKeywords ?? saveKeywords;
+  const persistPreferences = dependencies.savePreferences ?? savePreferences;
   const analysisTransport = () => config.analysisTransport ?? (config.openAiApiKey ? 'direct' : 'proxy');
   const app = express();
   app.disable('x-powered-by');
@@ -79,7 +81,7 @@ export const createApp = (
     apiVersion: RESEARCH_API_VERSION
   }));
   app.get('/api/settings', (_request, response) => {
-    const keywordSettings = readKeywords() ?? {keywords: ['火影忍者手游', '决斗场', '高招'], useKeywordPrefix: true};
+    const saved = readPreferences() ?? {};
     response.json({
     apiVersion: RESEARCH_API_VERSION,
     dataRoot: config.dataRoot,
@@ -100,19 +102,24 @@ export const createApp = (
     defaults: {
       durationMinutes: 5,
       contentWindowDays: 30,
-      ...keywordSettings,
+      keywords: ['火影忍者手游', '决斗场', '高招'],
+      useKeywordPrefix: true,
       includeVideos: true,
       includeArticles: true,
       mode: 'live',
       browserVisible: true,
       browserWindowCount: 4,
-      maxSources: 20
+      maxSources: 20,
+      ...saved
     }
     });
   });
   app.put('/api/settings/keywords', asyncRoute(async (request, response) => {
     const saved = await persistKeywords(request.body);
     response.json(saved);
+  }));
+  app.put('/api/settings/preferences', asyncRoute(async (request, response) => {
+    response.json(await persistPreferences(request.body));
   }));
   app.post('/api/analysis/login', asyncRoute(async (request, response) => {
     if (analysisTransport() !== 'proxy') {

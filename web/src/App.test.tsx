@@ -8,6 +8,10 @@
  *   - browser history deletion
  *     - removes only the confirmed record and updates the history count after deletion completes
  *     - retains the record and history count when browser deletion fails
+ *   - saved form preferences
+ *     - only saves keywords to a desktop server older than API 12 but keeps other choices for the visit
+ *     - shows a change again when the form is reopened while its save is still in flight
+ *     - reports a save that fails after the form was left
  * @end-catalog */
 
 import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
@@ -16,7 +20,8 @@ import App from './App';
 import {api} from './lib/api';
 import type {AppSettings, RunManifest} from './types';
 
-vi.mock('./lib/api', () => ({api: {settings: vi.fn(), listRuns: vi.fn(), chromeStatus: vi.fn(), startRun: vi.fn(), deleteRun: vi.fn()}}));
+vi.mock('./lib/api', () => ({api: {settings: vi.fn(), listRuns: vi.fn(), chromeStatus: vi.fn(), startRun: vi.fn(), deleteRun: vi.fn(),
+  savePreferences: vi.fn(), saveKeywords: vi.fn()}}));
 
 const settings = (userId: string): AppSettings => ({apiVersion: 11, runtime: 'browser', dataRoot: '当前浏览器本地存储',
   analysis: {aiConfigured: true, transport: 'proxy', model: 'gpt-6-luna', reasoningEffort: 'medium', liveMode: 'ai', demoMode: 'rule_demo',
@@ -112,5 +117,64 @@ describe('browser history deletion', () => {
     expect(screen.getByRole('button', {name: /^历史调查\s*2$/})).toBeVisible();
     expect(screen.getByRole('button', {name: `删除 ${run.request.name} 的调查`})).toBeEnabled();
     expect(screen.queryByText(/已删除/)).not.toBeInTheDocument();
+  });
+});
+
+describe('saved form preferences', () => {
+  const desktop = (apiVersion: number): AppSettings => ({...settings('desktop-user'), runtime: 'desktop', apiVersion,
+    analysis: {...settings('desktop-user').analysis!, transport: 'direct', account: undefined}});
+  const changeKeywords = async (value: string) => {
+    const input = await screen.findByLabelText(/关键词/);
+    fireEvent.change(input, {target: {value}});
+  };
+
+  it.each([['browser', settings('test-user')], ['desktop API 12', desktop(12)]] as const)('saves only the changed field through savePreferences (%s)', async (_label, value) => {
+    vi.mocked(api.settings).mockResolvedValue(value);
+    vi.mocked(api.savePreferences).mockImplementation(async (changes) => changes);
+    render(<App/>);
+    await changeKeywords('十月活动');
+    await waitFor(() => expect(api.savePreferences).toHaveBeenCalledWith({keywords: ['十月活动'], useKeywordPrefix: true}, {}));
+    expect(api.saveKeywords).not.toHaveBeenCalled();
+  });
+
+  it('only saves keywords to a desktop server older than API 12 but keeps other choices for the visit', async () => {
+    vi.mocked(api.settings).mockResolvedValue(desktop(11));
+    vi.mocked(api.saveKeywords).mockImplementation(async (changes) => changes);
+    render(<App/>);
+    fireEvent.click(await screen.findByRole('radio', {name: /^2 小时/}));
+    await act(async () => {await new Promise((resolve) => setTimeout(resolve, 600));});
+    expect(api.saveKeywords).not.toHaveBeenCalled();
+    expect(api.savePreferences).not.toHaveBeenCalled();
+    await changeKeywords('十月活动');
+    await waitFor(() => expect(api.saveKeywords).toHaveBeenCalledWith({keywords: ['十月活动'], useKeywordPrefix: true}));
+    await act(async () => {fireEvent.click(screen.getByRole('button', {name: /^历史调查/}));});
+    await act(async () => {fireEvent.click(screen.getByRole('button', {name: /新建调查/}));});
+    expect(await screen.findByRole('radio', {name: /^2 小时/})).toBeChecked();
+  });
+
+  it('shows a change again when the form is reopened while its save is still in flight', async () => {
+    let finish!: () => void;
+    vi.mocked(api.settings).mockResolvedValue(settings('test-user'));
+    vi.mocked(api.savePreferences).mockImplementation((changes) => new Promise((resolve) => {finish = () => resolve(changes);}));
+    render(<App/>);
+    fireEvent.click(await screen.findByRole('radio', {name: /^30 分钟/}));
+    await waitFor(() => expect(api.savePreferences).toHaveBeenCalledOnce());
+    await act(async () => {fireEvent.click(screen.getByRole('button', {name: /^历史调查/}));});
+    await act(async () => {fireEvent.click(screen.getByRole('button', {name: /新建调查/}));});
+    expect(await screen.findByRole('radio', {name: /^30 分钟/})).toBeChecked();
+    await act(async () => {finish();});
+    expect(screen.getByRole('radio', {name: /^30 分钟/})).toBeChecked();
+  });
+
+  it('reports a save that fails after the form was left', async () => {
+    let fail!: (reason: Error) => void;
+    vi.mocked(api.settings).mockResolvedValue(settings('test-user'));
+    vi.mocked(api.savePreferences).mockImplementation(() => new Promise((_resolve, reject) => {fail = reject;}));
+    render(<App/>);
+    fireEvent.click(await screen.findByRole('radio', {name: /^30 分钟/}));
+    await waitFor(() => expect(api.savePreferences).toHaveBeenCalledOnce());
+    await act(async () => {fireEvent.click(screen.getByRole('button', {name: /^历史调查/}));});
+    await act(async () => {fail(new Error('磁盘暂时不可写。'));});
+    expect(await screen.findByRole('alert')).toHaveTextContent('设置未能保存在本机：磁盘暂时不可写。');
   });
 });

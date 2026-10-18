@@ -18,7 +18,8 @@ import {RecordsView} from './components/RecordsView';
 import {ReportView} from './components/ReportView';
 import {RunDetail} from './components/RunDetail';
 import {api} from './lib/api';
-import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest, RunManifest} from './types';
+import {AppSettings, ChromeConnectionStatus, ResearchPreferences, ResearchRequest, RunManifest} from './types';
+import {SaveOptions} from './hooks/useAutoSave';
 
 type View = 'new' | 'guide' | 'history' | 'run' | 'report' | 'records';
 type Skin = 'classic' | 'shinobi';
@@ -34,8 +35,12 @@ const initialSkin = (): Skin => {
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>();
+  // The form choices confirmed on disk; settings.defaults also holds choices whose save is in flight or failed.
+  const [savedDefaults, setSavedDefaults] = useState<AppSettings['defaults']>();
   const [runs, setRuns] = useState<RunManifest[]>([]);
   const [view, setView] = useState<View>('new');
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [selected, setSelected] = useState<RunManifest>();
   const [busy, setBusy] = useState(false);
   const [selectingDataRoot, setSelectingDataRoot] = useState(false);
@@ -47,7 +52,10 @@ export default function App() {
   const refreshSettings = useCallback(async () => {
     const generation = ++settingsGeneration.current;
     const next = await api.settings();
-    if (generation === settingsGeneration.current) setSettings(next);
+    if (generation === settingsGeneration.current) {
+      setSettings(next);
+      setSavedDefaults(next.defaults);
+    }
   }, []);
 
   const loadRuns = useCallback(() => api.listRuns().then(setRuns).catch((reason) => setError(reason.message)), []);
@@ -86,7 +94,7 @@ export default function App() {
     window.localStorage.setItem(SKIN_STORAGE_KEY, skin);
     document.documentElement.dataset.skin = skin;
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    themeColor?.setAttribute('content', skin === 'shinobi' ? '#010814' : '#15130f');
+    themeColor?.setAttribute('content', skin === 'shinobi' ? '#0b1821' : '#15130f');
   }, [skin]);
 
   const start = async (request: ResearchRequest) => {
@@ -212,9 +220,28 @@ export default function App() {
     await refreshSettings();
   };
 
-  const saveKeywords = async (preferences: KeywordSettings) => {
-    const saved = await api.saveKeywords(preferences);
-    setSettings((current) => current ? {...current, defaults: {...current.defaults, ...saved}} : current);
+  const savePreferences = async (changes: ResearchPreferences, options?: SaveOptions) => {
+    // Shown at once, so returning to the form while the save is in flight shows the new choices; a reopened
+    // form compares with savedDefaults, so it saves them again if this save does not succeed.
+    setSettings((current) => current ? {...current, defaults: {...current.defaults, ...changes}} : current);
+    // A desktop server older than API 12 can only remember keywords; the other choices then last for this visit.
+    const legacy = settings?.runtime !== 'browser' && (settings?.apiVersion ?? 0) < 12;
+    try {
+      if (legacy) {
+        if (changes.keywords !== undefined) {
+          const saved = await api.saveKeywords({keywords: changes.keywords, useKeywordPrefix: changes.useKeywordPrefix ?? true});
+          setSavedDefaults((current) => current ? {...current, ...saved} : current);
+        }
+        return;
+      }
+      const saved = await api.savePreferences(changes, options);
+      setSettings((current) => current ? {...current, defaults: {...current.defaults, ...saved}} : current);
+      setSavedDefaults((current) => current ? {...current, ...saved} : current);
+    } catch (reason) {
+      // The form shows its own message; once the user has left it, nothing else would.
+      if (viewRef.current !== 'new') setError(`设置未能保存在本机：${reason instanceof Error ? reason.message : String(reason)}`);
+      throw reason;
+    }
   };
 
   if (!settings) return <div className="app-loading"><Flame className="brand-flame"/><strong>正在打开本地调查数据…</strong>{error && <p role="alert">{error}</p>}</div>;
@@ -243,7 +270,7 @@ export default function App() {
       </header>
 
       {view === 'new' && (
-        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSaveKeywords={saveKeywords} onLoginAnalysis={loginAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
+        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSavePreferences={savePreferences} savedDefaults={savedDefaults} onLoginAnalysis={loginAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'guide' && settings.runtime === 'browser' && (
         <ExtensionGuide chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>

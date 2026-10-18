@@ -6,15 +6,18 @@
  *   - concurrent keyword and directory saves keep the latest value from each without clobbering
  *   - keyword saves validate before changing existing settings and enable an omitted prefix flag
  *   - missing or corrupt saved keyword preferences safely fall back without changing the saved directory
+ *   - saves each form change like a save file and keeps the rest of the local settings
+ *   - reads back hand-edited preferences field by field and never echoes damaged keywords
+ *   - keeps a copy of an unreadable hand-edited settings file before saving over it
  * @end-catalog */
 
 import assert from 'node:assert/strict';
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import test from 'node:test';
 import {RequestValidationError} from '../../src/domain/validation';
-import {readSavedDataRoot, readSavedKeywords, saveDataRoot, saveKeywords} from '../../src/services/dataRootSettings';
+import {readSavedDataRoot, readSavedKeywords, readSavedPreferences, saveDataRoot, saveKeywords, savePreferences} from '../../src/services/dataRootSettings';
 
 test('persists and reloads the user-selected data directory', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-settings-'));
@@ -136,6 +139,75 @@ test('missing or corrupt saved keyword preferences safely fall back without chan
     assert.equal(readSavedDataRoot(settingsPath), resolve(dataRoot));
     await writeFile(settingsPath, JSON.stringify({keywordSettings: {keywords: ['活动']}}), 'utf8');
     assert.deepEqual(readSavedKeywords(settingsPath), {keywords: ['活动'], useKeywordPrefix: true});
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('saves each form change like a save file and keeps the rest of the local settings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-preferences-'));
+  const settingsPath = join(directory, 'settings.json');
+  const dataRoot = join(directory, 'data');
+  try {
+    assert.equal(readSavedPreferences(settingsPath), undefined);
+    await saveDataRoot(dataRoot, settingsPath);
+    assert.deepEqual(await savePreferences({durationMinutes: 30}, settingsPath), {durationMinutes: 30});
+    assert.deepEqual(await savePreferences({keywords: [' 十月活动 ', '十月活动'], useKeywordPrefix: false, mode: 'demo'}, settingsPath),
+      {durationMinutes: 30, mode: 'demo', keywords: ['十月活动'], useKeywordPrefix: false});
+    // A later change to one field keeps every earlier choice, including the separately saved data folder.
+    await savePreferences({maxSources: 60}, settingsPath);
+    const restarted = await import(`../../src/services/dataRootSettings.ts?restart=${Date.now()}`);
+    assert.deepEqual(restarted.readSavedPreferences(settingsPath),
+      {durationMinutes: 30, mode: 'demo', maxSources: 60, keywords: ['十月活动'], useKeywordPrefix: false});
+    assert.equal(readSavedDataRoot(settingsPath), resolve(dataRoot));
+    for (const invalid of [{durationMinutes: 0}, {durationMinutes: 2.5}, {contentWindowDays: 45}, {browserWindowCount: 6},
+      {mode: 'fast'}, {includeVideos: 'yes'}, {unknown: true}, {keywords: []}, null, []]) {
+      await assert.rejects(savePreferences(invalid, settingsPath), (error: unknown) => error instanceof RequestValidationError && error.statusCode === 400);
+    }
+    await savePreferences({includeVideos: false}, settingsPath);
+    await assert.rejects(savePreferences({includeArticles: false}, settingsPath), /视频和专栏至少选择一种/);
+    // A hand-edited file with one bad field drops only the research choices, never the keywords.
+    await writeFile(settingsPath, JSON.stringify({keywordSettings: {keywords: ['活动'], useKeywordPrefix: true}, researchPreferences: {maxSources: 999}}), 'utf8');
+    assert.deepEqual(readSavedPreferences(settingsPath), {keywords: ['活动'], useKeywordPrefix: true});
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('reads back hand-edited preferences field by field and never echoes damaged keywords', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-salvage-'));
+  const settingsPath = join(directory, 'settings.json');
+  try {
+    // Notepad's byte-order mark, an unknown field and one out-of-range value lose only themselves.
+    await writeFile(settingsPath, `﻿${JSON.stringify({researchPreferences: {durationMinutes: 30, maxSources: 999, mode: 'demo', extra: 1},
+      keywordSettings: {keywords: ['活动'], useKeywordPrefix: false}})}`, 'utf8');
+    assert.deepEqual(readSavedPreferences(settingsPath), {durationMinutes: 30, mode: 'demo', keywords: ['活动'], useKeywordPrefix: false});
+    // Both content types switched off in the file would block every start, so neither is applied.
+    await writeFile(settingsPath, JSON.stringify({researchPreferences: {includeVideos: false, includeArticles: false, mode: 'demo'}}), 'utf8');
+    assert.deepEqual(readSavedPreferences(settingsPath), {mode: 'demo'});
+    await writeFile(settingsPath, JSON.stringify({keywordSettings: {keywords: '决斗场', useKeywordPrefix: true}}), 'utf8');
+    assert.deepEqual(await savePreferences({mode: 'demo'}, settingsPath), {mode: 'demo'});
+    assert.deepEqual(await savePreferences({keywords: ['决斗场']}, settingsPath), {mode: 'demo', keywords: ['决斗场'], useKeywordPrefix: true});
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('keeps a copy of an unreadable hand-edited settings file before saving over it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naruto-mobile-unreadable-'));
+  const settingsPath = join(directory, 'settings.json');
+  try {
+    const broken = '{"keywordSettings": {"keywords": ["活动"],},}';
+    await writeFile(settingsPath, broken, 'utf8');
+    assert.equal(readSavedPreferences(settingsPath), undefined);
+    await savePreferences({mode: 'demo'}, settingsPath);
+    assert.deepEqual(readSavedPreferences(settingsPath), {mode: 'demo'});
+    const copies = (await readdir(directory)).filter((name) => name.startsWith('settings.json.unreadable-'));
+    assert.equal(copies.length, 1);
+    assert.equal(await readFile(join(directory, copies[0]), 'utf8'), broken);
+    // A readable file is never copied.
+    await savePreferences({mode: 'live'}, settingsPath);
+    assert.equal((await readdir(directory)).filter((name) => name.startsWith('settings.json.unreadable-')).length, 1);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

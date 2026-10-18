@@ -1,5 +1,5 @@
 export const RESEARCH_APP_ID = 'naruto-mobile-research';
-export const RESEARCH_API_VERSION = 11;
+export const RESEARCH_API_VERSION = 12;
 
 type JsonObject = Record<string, unknown>;
 

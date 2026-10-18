@@ -2,15 +2,17 @@
  * Exports
  *   Functions: NewResearch
  * Internal
- *   Types: Props
- *   Functions: formatDuration
+ *   Types: Props, Defaults, FormValues
+ *   Functions: formatDuration, keywordText, splitKeywords, searchesFor, keywordProblem, windowCountFor,
+ *              savedShape, savedShapeOf
  *   Constants: presets, KEYWORD_PREFIX, GAME_PREFIX, MAX_KEYWORDS
  * @end-catalog */
 
 import {FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState} from 'react';
-import {ArrowRight, CalendarDays, ChevronDown, ClipboardList, Clock3, Database, FileText, Files, FlaskConical, FolderOpen, Gauge, LoaderCircle, Save, Search, ShieldCheck, Video} from 'lucide-react';
-import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest} from '../types';
+import {ArrowRight, CalendarDays, ChevronDown, ClipboardList, Clock3, Database, FileText, Files, FlaskConical, FolderOpen, Gauge, Search, ShieldCheck, Video} from 'lucide-react';
+import {AppSettings, ChromeConnectionStatus, ResearchPreferences, ResearchRequest} from '../types';
 import {LoginDraft, ResearchReadiness, researchReadiness} from './ResearchReadiness';
+import {SavePreferences, useAutoSave} from '../hooks/useAutoSave';
 
 interface Props {
   settings: AppSettings;
@@ -20,7 +22,10 @@ interface Props {
   selectingDataRoot: boolean;
   onStart: (request: ResearchRequest) => Promise<void>;
   onSelectDataRoot: () => Promise<void>;
-  onSaveKeywords?: (preferences: KeywordSettings) => Promise<void>;
+  /** Remembers the form on this computer; receives only the changed fields, shortly after each valid change. */
+  onSavePreferences?: SavePreferences;
+  /** Choices confirmed on disk, when they differ from settings.defaults (a save still in flight or failed). */
+  savedDefaults?: AppSettings['defaults'];
   onLoginAnalysis?: (identifier: string, password: string) => Promise<void>;
   onOpenGuide: () => void;
   onConnectChrome: () => Promise<void>;
@@ -39,6 +44,64 @@ const MAX_KEYWORDS = 12;
 
 const formatDuration = (minutes: number) => minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
 
+type Defaults = AppSettings['defaults'];
+
+/** The keyword box text for saved keywords; saves from before the prefix switch stored full searches. */
+const keywordText = (defaults: Defaults) => (Array.isArray(defaults.keywords) ? defaults.keywords : [])
+  .filter((keyword): keyword is string => typeof keyword === 'string')
+  .map((keyword) => {
+    if (defaults.useKeywordPrefix !== undefined) return keyword;
+    const topic = keyword.startsWith(KEYWORD_PREFIX) ? keyword.slice(KEYWORD_PREFIX.length).trim() : '';
+    return topic || keyword;
+  }).join('\n');
+
+const splitKeywords = (text: string) => [...new Set(text.split(/\r?\n|，|,/).map((item) => item.trim()).filter(Boolean))];
+
+const searchesFor = (topics: string[], usePrefix: boolean) => [...new Set(topics
+  .map((item) => usePrefix && !GAME_PREFIX.test(item) ? `${KEYWORD_PREFIX} ${item}` : item))];
+
+const keywordProblem = (topics: string[], searches: string[]) => topics.length > MAX_KEYWORDS || searches.length > MAX_KEYWORDS
+  ? `最多填写 ${MAX_KEYWORDS} 个关键词。` : searches.some((keyword) => keyword.length > 40) ? '单个实际搜索词不能超过 40 个字符。' : '';
+
+const windowCountFor = (count: number) => [4, 8].includes(count) ? count : 4;
+
+interface FormValues {
+  topics: string[];
+  keywordError: string;
+  useKeywordPrefix: boolean;
+  durationMinutes: number;
+  contentWindowDays: number;
+  includeVideos: boolean;
+  includeArticles: boolean;
+  mode: 'live' | 'demo';
+  browserWindowCount: number;
+  maxSources: number;
+}
+
+/**
+ * What the form saves: every valid choice. Half-typed values (no keywords, out-of-range numbers, both content
+ * types off) are left out, so the last saved value stays until the field is valid again.
+ */
+const savedShape = (values: FormValues): ResearchPreferences => ({
+  ...(values.topics.length > 0 && !values.keywordError ? {keywords: values.topics, useKeywordPrefix: values.useKeywordPrefix} : {}),
+  ...(Number.isInteger(values.durationMinutes) && values.durationMinutes >= 1 && values.durationMinutes <= 720 ? {durationMinutes: values.durationMinutes} : {}),
+  contentWindowDays: values.contentWindowDays,
+  ...(values.includeVideos || values.includeArticles ? {includeVideos: values.includeVideos, includeArticles: values.includeArticles} : {}),
+  mode: values.mode,
+  browserWindowCount: values.browserWindowCount,
+  ...(Number.isInteger(values.maxSources) && values.maxSources >= 3 && values.maxSources <= 200 ? {maxSources: values.maxSources} : {})
+});
+
+/** The saved shape of a defaults object, read the same way the form reads it on opening. */
+const savedShapeOf = (defaults: Defaults): ResearchPreferences => {
+  const topics = splitKeywords(keywordText(defaults));
+  const useKeywordPrefix = defaults.useKeywordPrefix ?? true;
+  return savedShape({topics, keywordError: keywordProblem(topics, searchesFor(topics, useKeywordPrefix)), useKeywordPrefix,
+    durationMinutes: defaults.durationMinutes, contentWindowDays: defaults.contentWindowDays, includeVideos: defaults.includeVideos,
+    includeArticles: defaults.includeArticles, mode: defaults.mode, browserWindowCount: windowCountFor(defaults.browserWindowCount),
+    maxSources: defaults.maxSources});
+};
+
 export const NewResearch = ({
   settings,
   chromeStatus,
@@ -47,56 +110,51 @@ export const NewResearch = ({
   selectingDataRoot,
   onStart,
   onSelectDataRoot,
-  onSaveKeywords,
+  onSavePreferences,
+  savedDefaults,
   onLoginAnalysis,
   onOpenGuide,
   onConnectChrome,
   onDisconnectChrome
 }: Props) => {
-  const [durationMinutes, setDuration] = useState(settings.defaults.durationMinutes);
+  // Number fields keep what is typed, so clearing one leaves it empty instead of jumping to 0.
+  const [durationDraft, setDurationDraft] = useState(String(settings.defaults.durationMinutes));
+  const durationMinutes = durationDraft.trim() === '' ? Number.NaN : Number(durationDraft);
+  const setDuration = (minutes: number) => setDurationDraft(String(minutes));
   const [contentWindowDays, setWindow] = useState(settings.defaults.contentWindowDays);
-  const [keywords, setKeywords] = useState(settings.defaults.keywords.map((keyword) => {
-    if (settings.defaults.useKeywordPrefix !== undefined) return keyword;
-    const topic = keyword.startsWith(KEYWORD_PREFIX) ? keyword.slice(KEYWORD_PREFIX.length).trim() : '';
-    return topic || keyword;
-  }).join('\n'));
+  const [keywords, setKeywords] = useState(() => keywordText(settings.defaults));
   const [useKeywordPrefix, setUseKeywordPrefix] = useState(settings.defaults.useKeywordPrefix ?? true);
-  const [savingKeywords, setSavingKeywords] = useState(false);
-  const [keywordSaveMessage, setKeywordSaveMessage] = useState('');
-  const [keywordSaveError, setKeywordSaveError] = useState('');
   const [includeVideos, setVideos] = useState(settings.defaults.includeVideos);
   const [includeArticles, setArticles] = useState(settings.defaults.includeArticles);
   const [mode, setMode] = useState<'live' | 'demo'>(settings.defaults.mode);
-  const [browserWindowCount, setBrowserWindowCount] = useState([4, 8].includes(settings.defaults.browserWindowCount) ? settings.defaults.browserWindowCount : 4);
-  const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [browserWindowCount, setBrowserWindowCount] = useState(windowCountFor(settings.defaults.browserWindowCount));
+  const [sourcesDraft, setSourcesDraft] = useState(String(settings.defaults.maxSources));
+  const maxSources = sourcesDraft.trim() === '' ? Number.NaN : Number(sourcesDraft);
   const [storageDetailsOpen, setStorageDetailsOpen] = useState(false);
   // Kept here so a switch to demo and back, which unmounts the readiness panel, keeps the sign-in draft.
   const [login, setLogin] = useState<LoginDraft>({identifier: '', error: '', busy: false});
   const startButton = useRef<HTMLButtonElement>(null);
+  const sideColumn = useRef<HTMLDivElement>(null);
+  const [sideStickTop, setSideStickTop] = useState<number | null>(null);
   const startHintBox = useRef<HTMLParagraphElement>(null);
   const storageDetails = useRef<HTMLDivElement>(null);
   const focusAfterModeChange = useRef<'start' | 'readiness' | null>(null);
-  const rawKeywords = useMemo(() => [...new Set(keywords.split(/\r?\n|，|,/)
-    .map((item) => item.trim())
-    .filter(Boolean))], [keywords]);
-  const keywordList = useMemo(() => [...new Set(rawKeywords
-    .map((item) => useKeywordPrefix && !GAME_PREFIX.test(item) ? `${KEYWORD_PREFIX} ${item}` : item))], [rawKeywords, useKeywordPrefix]);
-  const keywordError = rawKeywords.length > MAX_KEYWORDS || keywordList.length > MAX_KEYWORDS ? `最多填写 ${MAX_KEYWORDS} 个关键词。`
-    : keywordList.some((keyword) => keyword.length > 40) ? '单个实际搜索词不能超过 40 个字符。' : '';
+  const rawKeywords = useMemo(() => splitKeywords(keywords), [keywords]);
+  const keywordList = useMemo(() => searchesFor(rawKeywords, useKeywordPrefix), [rawKeywords, useKeywordPrefix]);
+  const keywordError = keywordProblem(rawKeywords, keywordList);
   // Only worth showing when the prefix or deduplication changed what will actually be searched.
   const searchesDiffer = keywordList.length !== rawKeywords.length || keywordList.some((keyword, index) => keyword !== rawKeywords[index]);
   const browserRuntime = settings.runtime === 'browser';
   const readiness = researchReadiness(settings, chromeStatus);
   const analysisRequirement = settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥'
     : readiness.analysisUnavailable ? 'AI 分析服务暂不可用' : '需要登录 Archtree';
-  const durationValid = durationMinutes >= 1 && durationMinutes <= 720;
-  const sourcesValid = maxSources >= 3 && maxSources <= 200;
+  const durationValid = Number.isInteger(durationMinutes) && durationMinutes >= 1 && durationMinutes <= 720;
+  const sourcesValid = Number.isInteger(maxSources) && maxSources >= 3 && maxSources <= 200;
   const formIssue = rawKeywords.length === 0 ? '请至少填写 1 个关键词。'
     : keywordError ? keywordError
     : !includeVideos && !includeArticles ? '请至少选择一种内容类型。'
-    : !durationValid ? '高级设置中的采集时长需在 1–720 分钟之间。'
-    : !sourcesValid ? '高级设置中的来源数需在 3–200 个之间。' : '';
+    : !durationValid ? '采集时长需为 1–720 之间的整数分钟。'
+    : !sourcesValid ? '最多采集来源数需为 3–200 之间的整数。' : '';
   const pendingSteps = mode === 'live' ? readiness.pendingSteps : [];
   // A re-check of an already connected Chrome keeps the step done but must finish before a run starts.
   const recheckingChrome = mode === 'live' && readiness.chromeReady && connectingChrome;
@@ -114,14 +172,6 @@ export const NewResearch = ({
     : keywordList.length <= 3 ? keywordList.join('、') : `共 ${keywordList.length} 个：${keywordList.slice(0, 2).join('、')}…`;
   const contentLabel = [includeVideos && '热门视频', includeArticles && '专栏文章'].filter(Boolean).join('、') || '未选择';
   const runLabel = mode === 'live' ? `真实调查 · ${browserWindowCount} 个标签页` : '本地演示';
-  const presetSelected = presets.some((preset) => preset.minutes === durationMinutes);
-  const missionSteps = [
-    {title: '关键词', detail: `${keywordList.length} 个搜索词`, done: rawKeywords.length > 0 && !keywordError},
-    {title: '内容范围', detail: `最近 ${contentWindowDays} 天`, done: includeVideos || includeArticles},
-    {title: '采集时长', detail: `最长 ${formatDuration(durationMinutes)}`, done: durationValid},
-    {title: '开始前准备', detail: mode === 'demo' ? '演示无需准备' : `${2 - readiness.pendingSteps.length}/2 项就绪`, done: mode === 'demo' || readiness.pendingSteps.length === 0}
-  ];
-  const currentMission = missionSteps.findIndex((step) => !step.done);
 
   useEffect(() => {
     const target = focusAfterModeChange.current;
@@ -134,6 +184,26 @@ export const NewResearch = ({
   useEffect(() => {
     if (storageDetailsOpen) storageDetails.current?.scrollIntoView?.({block: 'nearest'});
   }, [storageDetailsOpen]);
+
+  // The side column never scrolls on its own. When it is taller than the space under the top bar
+  // (96px offset + 32px page padding), its sticky offset becomes negative: it scrolls with the page
+  // until its bottom, with the start button, is 32px above the viewport edge and then stays there.
+  useEffect(() => {
+    const side = sideColumn.current;
+    if (!side || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const height = side.offsetHeight;
+      setSideStickTop(height > window.innerHeight - 128 ? window.innerHeight - height - 32 : null);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(side);
+    window.addEventListener('resize', measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
 
   const switchMode = (next: 'live' | 'demo', focus: 'start' | 'readiness') => {
     focusAfterModeChange.current = focus;
@@ -148,9 +218,10 @@ export const NewResearch = ({
     panel.scrollIntoView?.({behavior: reduceMotion ? 'auto' : 'smooth', block: 'center'});
   };
 
-  // Enter on a focused preset would otherwise submit the form and start the research at once.
-  const keepEnterOnPreset = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Enter' && (event.target as HTMLElement).matches('input[type="radio"]')) event.preventDefault();
+  // Enter in a checkbox, radio, number or text field would otherwise submit the form and start the research;
+  // only the start button starts it. Fields with their own Enter action (the sign-in inputs) handle it first.
+  const keepEnterInFields = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key === 'Enter' && (event.target as HTMLElement).matches('input')) event.preventDefault();
   };
 
   const submit = async (event: FormEvent) => {
@@ -170,24 +241,19 @@ export const NewResearch = ({
     });
   };
 
-  const saveKeywords = async () => {
-    if (!onSaveKeywords || keywordList.length === 0 || keywordError) return;
-    setSavingKeywords(true);
-    setKeywordSaveMessage('');
-    setKeywordSaveError('');
-    try {
-      await onSaveKeywords({keywords: rawKeywords, useKeywordPrefix});
-      setKeywordSaveMessage('已保存，下次打开自动使用。');
-    } catch (error) {
-      setKeywordSaveError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSavingKeywords(false);
-    }
-  };
-
-  const clearKeywordSaveMessage = () => {
-    setKeywordSaveMessage('');
-    setKeywordSaveError('');
+  // Like a game save: every valid choice is written locally shortly after it changes and restored next time.
+  const preferences = useMemo(() => savedShape({topics: rawKeywords, keywordError, useKeywordPrefix, durationMinutes,
+    contentWindowDays, includeVideos, includeArticles, mode, browserWindowCount, maxSources}),
+  [rawKeywords, keywordError, useKeywordPrefix, durationMinutes, contentWindowDays, includeVideos, includeArticles, mode,
+    browserWindowCount, maxSources]);
+  // Compared against what is on disk, so a choice whose save failed or is still in flight is saved again.
+  const [baseline] = useState(() => savedShapeOf(savedDefaults ?? settings.defaults));
+  // Typing (the keyword box, number fields) is bundled for a moment; a click on a choice is written at once,
+  // so even a reload right after it keeps the change.
+  const typing = useRef(false);
+  const saveError = useAutoSave(preferences, onSavePreferences, () => typing.current ? 400 : 0, baseline);
+  const noteInputKind = (event: FormEvent<HTMLFormElement>) => {
+    typing.current = (event.target as HTMLElement).matches('textarea, input[type="number"], input[type="text"], input:not([type])');
   };
 
   // The demo reads fixed samples, so only the duration and the run mode describe what it will do.
@@ -217,19 +283,11 @@ export const NewResearch = ({
 
   return (
     <main className="new-research">
-      <header className="new-research-header">
-        <h1>新建调查</h1>
-        <p>把社区声音，整理成可行动的产品情报</p>
-      </header>
+      {/* The top bar already names the page; the heading stays for assistive technology only. */}
+      <h1 className="visually-hidden">新建调查</h1>
 
-      <form className="new-research-layout" onSubmit={submit}>
+      <form className="new-research-layout" onSubmit={submit} onKeyDown={keepEnterInFields} onChangeCapture={noteInputKind}>
         <div className="research-form">
-          <ol className="shinobi-mission-score" aria-hidden="true">
-            {missionSteps.map((step, index) => (
-              <li key={step.title} className={step.done ? 'complete' : index === currentMission ? 'current' : ''}><span>{index < 3 ? index + 1 : step.done ? '✓' : '…'}</span><strong>{step.title}</strong><small>{step.detail}</small></li>
-            ))}
-          </ol>
-
           <section className="research-step">
             <div className="research-step-heading">
               <span className="research-step-number" aria-hidden="true">1</span>
@@ -237,20 +295,15 @@ export const NewResearch = ({
                 <h2 id="keywords-title">调查关键词</h2>
                 <p>每行一个，用于在 B站搜索相关内容</p>
               </div>
-              <label className="prefix-toggle"><input type="checkbox" checked={useKeywordPrefix} disabled={savingKeywords} onChange={(event) => {setUseKeywordPrefix(event.target.checked); clearKeywordSaveMessage();}}/><span>自动添加「火影手游」前缀</span></label>
+              <label className="prefix-toggle"><input type="checkbox" checked={useKeywordPrefix} onChange={(event) => setUseKeywordPrefix(event.target.checked)}/><span>自动添加「火影手游」前缀</span></label>
             </div>
-            <textarea className="keyword-input" id="keywords" aria-label="调查关键词" value={keywords} disabled={savingKeywords} onChange={(event) => {setKeywords(event.target.value); clearKeywordSaveMessage();}} rows={3} placeholder={'十月活动\n新忍者评价\n氪金意愿'} aria-describedby="keyword-help keyword-count keyword-error" aria-invalid={Boolean(keywordError)}/>
+            <textarea className="keyword-input" id="keywords" aria-label="调查关键词" value={keywords} onChange={(event) => setKeywords(event.target.value)} rows={3} placeholder={'十月活动\n新忍者评价\n氪金意愿'} aria-describedby="keyword-help keyword-count keyword-error" aria-invalid={Boolean(keywordError)}/>
             <div className="keyword-meta">
               <p className="field-hint" id="keyword-help">{useKeywordPrefix ? '只填主题即可，例如「十月活动」；已带游戏名的词不会重复添加。' : '前缀已关闭，将按你填写的关键词原样搜索。'}</p>
               <span className={`keyword-count ${rawKeywords.length > MAX_KEYWORDS ? 'over' : ''}`} id="keyword-count">{rawKeywords.length} / {MAX_KEYWORDS} 个关键词</span>
             </div>
             {keywordList.length > 0 && searchesDiffer && <div className="keyword-search-preview" aria-label="实际搜索词" aria-live="polite"><small>实际搜索</small><ul>{keywordList.map((keyword) => <li key={keyword}>{keyword}</li>)}</ul></div>}
             <p className="field-error" id="keyword-error" role={keywordError ? 'alert' : undefined}>{keywordError}</p>
-            {onSaveKeywords && <div className="keyword-save-row">
-              <button className="text-action" type="button" title="同时记住关键词和前缀开关" disabled={savingKeywords || keywordList.length === 0 || Boolean(keywordError)} onClick={() => void saveKeywords()}>{savingKeywords ? <LoaderCircle className="spin" size={15}/> : <Save size={15}/>} {savingKeywords ? '正在保存…' : '保存关键词'}</button>
-              <small role="status">{keywordSaveMessage}</small>
-            </div>}
-            {keywordSaveError && <p className="field-error" role="alert">{keywordSaveError}</p>}
           </section>
 
           <section className="research-step">
@@ -289,11 +342,11 @@ export const NewResearch = ({
             <div className="research-step-heading">
               <span className="research-step-number" aria-hidden="true">3</span>
               <div>
-                <h2 id="duration-title">采集时长</h2>
+                <h2 id="duration-title">采集时长与上限</h2>
                 <p>达到时长或来源上限后自动结束，暂停时间不计入</p>
               </div>
             </div>
-            <div className="duration-options" role="radiogroup" aria-labelledby="duration-title" onKeyDown={keepEnterOnPreset}>
+            <div className="duration-options" role="radiogroup" aria-label="采集时长">
               {presets.map((preset) => (
                 <label className={`choice-card duration-option ${durationMinutes === preset.minutes ? 'selected' : ''}`} key={preset.minutes}>
                   <input type="radio" name="duration" checked={durationMinutes === preset.minutes} onChange={() => setDuration(preset.minutes)}/>
@@ -301,70 +354,77 @@ export const NewResearch = ({
                 </label>
               ))}
             </div>
-            {!presetSelected && <p className="field-hint">已自定义为 {durationValid ? formatDuration(durationMinutes) : `${durationMinutes} 分钟`}，可在高级设置中修改。</p>}
+            <div className="setting-rows">
+              <div className="setting-row">
+                <span className="setting-row-icon" aria-hidden="true"><Clock3 size={18}/></span>
+                <span className="setting-row-copy"><strong>自定义时长</strong><small id="duration-range">可设置 1–720 分钟；来源先采完时会提前结束</small></span>
+                <span className="number-input"><input aria-label="自定义时长（分钟）" aria-invalid={!durationValid} aria-describedby={durationValid ? 'duration-range' : 'duration-range duration-error'} type="number" min={1} max={720} step={1} value={durationDraft} onChange={(event) => setDurationDraft(event.target.value)}/><em>分钟</em></span>
+                {!durationValid && <p className="field-error" id="duration-error">请输入 1–720 之间的整数分钟。</p>}
+              </div>
+              <div className="setting-row">
+                <span className="setting-row-icon" aria-hidden="true"><Files size={18}/></span>
+                <span className="setting-row-copy"><strong>最多采集来源数</strong><small id="sources-range">{mode === 'demo' ? '演示模式使用固定样本，不受此项限制；真实调查时视频和专栏合计 3–200 个' : '视频和专栏合计，可设置 3–200 个；采完这个数量会生成报告'}</small></span>
+                <span className="number-input"><input aria-label="最多采集来源数" aria-invalid={!sourcesValid} aria-describedby={sourcesValid ? 'sources-range' : 'sources-range sources-error'} type="number" min={3} max={200} step={1} value={sourcesDraft} onChange={(event) => setSourcesDraft(event.target.value)}/><em>个</em></span>
+                {!sourcesValid && <p className="field-error" id="sources-error">请输入 3–200 之间的整数。</p>}
+              </div>
+            </div>
           </section>
 
-          <section className="research-step advanced-step">
-            <h2 className="advanced-heading">
-              <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} aria-controls="advanced-settings" onClick={() => setAdvancedOpen((open) => !open)}>
-                <span className="research-step-number" aria-hidden="true">4</span>
-                <span className="advanced-toggle-copy">
-                  <strong>高级设置</strong>
-                  <small>{advancedOpen ? '默认配置即可开始' : mode === 'live' ? `真实调查 · ${browserWindowCount} 个标签页 · 最多 ${maxSources} 个来源` : '本地演示 · 固定虚构样本'}</small>
-                </span>
-                <ChevronDown className="advanced-chevron" size={20} aria-hidden="true"/>
-              </button>
-            </h2>
-            {advancedOpen && <div className="advanced-settings" id="advanced-settings">
-              <fieldset className="advanced-group">
-                <legend>运行模式</legend>
-                <div className="mode-options">
-                  <label className={`choice-card ${mode === 'live' ? 'selected' : ''}`}>
-                    <input type="radio" name="mode" checked={mode === 'live'} onChange={() => setMode('live')}/>
-                    <Search size={19} aria-hidden="true"/>
-                    <span><strong>真实调查 · Luna AI</strong><small>{readiness.aiReady ? `${settings.analysis?.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${analysisRequirement}`}</small></span>
-                  </label>
-                  <label className={`choice-card ${mode === 'demo' ? 'selected' : ''}`}>
-                    <input type="radio" name="mode" checked={mode === 'demo'} onChange={() => setMode('demo')}/>
-                    <FlaskConical size={19} aria-hidden="true"/>
-                    <span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span>
-                  </label>
-                </div>
-              </fieldset>
-              <div className="advanced-row">
-                <span className="advanced-row-icon" aria-hidden="true"><Clock3 size={18}/></span>
-                <span className="advanced-row-copy"><strong>最长采集时长</strong><small id="duration-range">可设置 1–720 分钟；来源先采完时会提前结束</small></span>
-                <span className="number-input"><input aria-label="最长采集时长（分钟）" aria-invalid={!durationValid} aria-describedby={durationValid ? 'duration-range' : 'duration-range duration-error'} type="number" min={1} max={720} value={durationMinutes} onChange={(event) => setDuration(Number(event.target.value))}/><em>分钟</em></span>
-                {!durationValid && <p className="field-error" id="duration-error">请输入 1–720 之间的分钟数。</p>}
+          <section className="research-step">
+            <div className="research-step-heading">
+              <span className="research-step-number" aria-hidden="true">4</span>
+              <div>
+                <h2 id="mode-title">运行方式</h2>
+                <p>真实调查读取 B站并由 AI 分析；本地演示只用虚构样本</p>
               </div>
-              <div className="advanced-row">
-                <span className="advanced-row-icon" aria-hidden="true"><Files size={18}/></span>
-                <span className="advanced-row-copy"><strong>最多采集来源数</strong><small id="sources-range">{mode === 'demo' ? '演示模式使用固定样本，不受此项限制；真实调查时视频和专栏合计 3–200 个' : '视频和专栏合计，可设置 3–200 个；采完这个数量会生成报告'}</small></span>
-                <span className="number-input"><input aria-label="最多采集来源数" aria-invalid={!sourcesValid} aria-describedby={sourcesValid ? 'sources-range' : 'sources-range sources-error'} type="number" min={3} max={200} value={maxSources} onChange={(event) => setMaxSources(Number(event.target.value))}/><em>个</em></span>
-                {!sourcesValid && <p className="field-error" id="sources-error">请输入 3–200 之间的来源数。</p>}
-              </div>
-              <div className={`advanced-row ${mode === 'demo' ? 'disabled' : ''}`}>
-                <span className="advanced-row-icon" aria-hidden="true"><Gauge size={18}/></span>
-                <span className="advanced-row-copy"><strong>并行调查标签页</strong><small>{mode === 'demo' ? '演示模式不打开 Chrome 标签页。'
+            </div>
+            <div className="mode-options" role="radiogroup" aria-labelledby="mode-title">
+              <label className={`choice-card ${mode === 'live' ? 'selected' : ''}`}>
+                <input type="radio" name="mode" checked={mode === 'live'} onChange={() => setMode('live')}/>
+                <Search size={19} aria-hidden="true"/>
+                <span><strong>真实调查 · Luna AI</strong><small>{readiness.aiReady ? `${settings.analysis?.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${analysisRequirement}`}</small></span>
+              </label>
+              <label className={`choice-card ${mode === 'demo' ? 'selected' : ''}`}>
+                <input type="radio" name="mode" checked={mode === 'demo'} onChange={() => setMode('demo')}/>
+                <FlaskConical size={19} aria-hidden="true"/>
+                <span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span>
+              </label>
+            </div>
+            <div className="setting-rows">
+              <div className={`setting-row ${mode === 'demo' ? 'disabled' : ''}`}>
+                <span className="setting-row-icon" aria-hidden="true"><Gauge size={18}/></span>
+                <span className="setting-row-copy"><strong>并行调查标签页</strong><small>{mode === 'demo' ? '演示模式不打开 Chrome 标签页。'
                   : browserRuntime ? '在独立的新 Chrome 窗口中运行，不切换你原窗口的页面。' : '在已连接的 Chrome 中同时读取多个来源。'}</small></span>
                 <select aria-label="并行调查标签页数" value={browserWindowCount} disabled={mode === 'demo'} onChange={(event) => setBrowserWindowCount(Number(event.target.value))}>
                   <option value={4}>4 个 · 默认</option>
                   <option value={8}>8 个 · 更快</option>
                 </select>
               </div>
-              {mode === 'live' && settings.analysis?.maxConcurrentRequests !== undefined && <p className="field-hint">标签页数只控制读取来源。AI 分析独立运行，最多 {settings.analysis.maxConcurrentRequests} 个请求并行，遇到限流时自动减少；每次详析最多 {settings.analysis.batchSize ?? 10} 条记录。</p>}
-              {!browserRuntime && <div className="advanced-row">
-                <span className="advanced-row-icon" aria-hidden="true"><Database size={18}/></span>
-                <span className="advanced-row-copy"><strong>数据存放位置</strong><small className="data-root-path">{settings.dataRoot}</small><small>更改位置不会移动原文件。</small></span>
+            </div>
+            {mode === 'live' && settings.analysis?.maxConcurrentRequests !== undefined && <p className="field-hint">标签页数只控制读取来源。AI 分析独立运行，最多 {settings.analysis.maxConcurrentRequests} 个请求并行，遇到限流时自动减少；每次详析最多 {settings.analysis.batchSize ?? 10} 条记录。</p>}
+          </section>
+
+          {!browserRuntime && <section className="research-step">
+            <div className="research-step-heading">
+              <span className="research-step-number" aria-hidden="true">5</span>
+              <div>
+                <h2>数据位置</h2>
+                <p>原始采集数据、分析和报告都保存在这个文件夹</p>
+              </div>
+            </div>
+            <div className="setting-rows">
+              <div className="setting-row">
+                <span className="setting-row-icon" aria-hidden="true"><Database size={18}/></span>
+                <span className="setting-row-copy"><strong>数据存放位置</strong><small className="data-root-path">{settings.dataRoot}</small><small>更改位置不会移动原文件。</small></span>
                 <button className="text-action bordered" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
                   <FolderOpen size={15}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
                 </button>
-              </div>}
-            </div>}
-          </section>
+              </div>
+            </div>
+          </section>}
         </div>
 
-        <div className="research-side">
+        <div className="research-side" ref={sideColumn} style={sideStickTop === null ? undefined : {top: sideStickTop}}>
           <div className="research-side-scroll">
             {/* Preparation keeps one child slot so a status poll never remounts it; the stateless summary moves around it. */}
             {pendingSteps.length === 0 && summary}
@@ -375,7 +435,7 @@ export const NewResearch = ({
               {browserRuntime ? <>
                 <p>调查、原文、缓存和报告保存在当前浏览器。请在「历史调查」中导出 ZIP 备份；清除网站数据会删除本地调查。采集和分析期间请保持此网页打开。</p>
                 <p>扩展只采集 B站公开可见内容，并只关闭自己创建的调查标签页；原始数据不上传。</p>
-              </> : <p>{settings.dataRootLocked ? '原始采集数据保存在本机，存放位置由环境配置固定。' : '原始采集数据保存在本机，可在高级设置中更改存放位置。'}</p>}
+              </> : <p>{settings.dataRootLocked ? '原始采集数据保存在本机，存放位置由环境配置固定。' : '原始采集数据保存在本机，可在第 5 步「数据位置」中更改存放位置。'}</p>}
               <p>只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>
             </div>}
           </div>
@@ -395,6 +455,7 @@ export const NewResearch = ({
               <button className="text-action" type="button" aria-expanded={storageDetailsOpen} aria-controls="storage-details" onClick={() => setStorageDetailsOpen((open) => !open)}>{storageDetailsOpen ? '收起' : '了解详情'}</button>
             </p>
             {mode === 'live' && <p className="privacy-line">真实调查会把去标识化的评论语境经私人服务器发送给 AI 分析。</p>}
+            {saveError && <p className="save-error" role="alert">设置未能保存在本机：{saveError}</p>}
           </div>
         </div>
       </form>
