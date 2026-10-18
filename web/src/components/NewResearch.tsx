@@ -3,13 +3,14 @@
  *   Functions: NewResearch
  * Internal
  *   Types: Props
- *   Constants: presets, KEYWORD_PREFIX, GAME_PREFIX
+ *   Functions: formatDuration
+ *   Constants: presets, KEYWORD_PREFIX, GAME_PREFIX, MAX_KEYWORDS
  * @end-catalog */
 
-import {FormEvent, useMemo, useState} from 'react';
-import {ArrowRight, BookOpen, Check, CircleAlert, CircleCheck, Clock3, Files, FlaskConical, FolderOpen, Gauge, KeyRound, LoaderCircle, LogOut, MonitorCog, Save, Search, Sparkles, Unplug} from 'lucide-react';
+import {FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState} from 'react';
+import {ArrowRight, CalendarDays, ChevronDown, ClipboardList, Clock3, Database, FileText, Files, FlaskConical, FolderOpen, Gauge, LoaderCircle, Save, Search, ShieldCheck, Video} from 'lucide-react';
 import {AppSettings, ChromeConnectionStatus, KeywordSettings, ResearchRequest} from '../types';
-import {isExtensionOutdated, latestExtensionVersion} from '../browser/extensionVersion';
+import {LoginDraft, ResearchReadiness, researchReadiness} from './ResearchReadiness';
 
 interface Props {
   settings: AppSettings;
@@ -21,20 +22,22 @@ interface Props {
   onSelectDataRoot: () => Promise<void>;
   onSaveKeywords?: (preferences: KeywordSettings) => Promise<void>;
   onLoginAnalysis?: (identifier: string, password: string) => Promise<void>;
-  onLogoutAnalysis?: () => Promise<void>;
   onOpenGuide: () => void;
   onConnectChrome: () => Promise<void>;
   onDisconnectChrome: () => Promise<void>;
 }
 
 const presets = [
-  {minutes: 5, title: '快速体验', description: '先看热点，适合第一次使用'},
-  {minutes: 30, title: '标准调查', description: '覆盖更多视频和评论'},
-  {minutes: 120, title: '深入调查', description: '适合版本或活动复盘'}
+  {minutes: 5, title: '快速体验'},
+  {minutes: 30, title: '标准调查'},
+  {minutes: 120, title: '深入调查'}
 ];
 
 const KEYWORD_PREFIX = '火影手游';
 const GAME_PREFIX = /^火影(?:忍者)?手游/u;
+const MAX_KEYWORDS = 12;
+
+const formatDuration = (minutes: number) => minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
 
 export const NewResearch = ({
   settings,
@@ -46,12 +49,10 @@ export const NewResearch = ({
   onSelectDataRoot,
   onSaveKeywords,
   onLoginAnalysis,
-  onLogoutAnalysis,
   onOpenGuide,
   onConnectChrome,
   onDisconnectChrome
 }: Props) => {
-  const browserRuntime = settings.runtime === 'browser';
   const [durationMinutes, setDuration] = useState(settings.defaults.durationMinutes);
   const [contentWindowDays, setWindow] = useState(settings.defaults.contentWindowDays);
   const [keywords, setKeywords] = useState(settings.defaults.keywords.map((keyword) => {
@@ -68,43 +69,93 @@ export const NewResearch = ({
   const [mode, setMode] = useState<'live' | 'demo'>(settings.defaults.mode);
   const [browserWindowCount, setBrowserWindowCount] = useState([4, 8].includes(settings.defaults.browserWindowCount) ? settings.defaults.browserWindowCount : 4);
   const [maxSources, setMaxSources] = useState(settings.defaults.maxSources);
-  const [archtreeIdentifier, setArchtreeIdentifier] = useState('');
-  const [archtreePassword, setArchtreePassword] = useState('');
-  const [authenticating, setAuthenticating] = useState(false);
-  const [authenticationError, setAuthenticationError] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [storageDetailsOpen, setStorageDetailsOpen] = useState(false);
+  // Kept here so a switch to demo and back, which unmounts the readiness panel, keeps the sign-in draft.
+  const [login, setLogin] = useState<LoginDraft>({identifier: '', error: '', busy: false});
+  const startButton = useRef<HTMLButtonElement>(null);
+  const startHintBox = useRef<HTMLParagraphElement>(null);
+  const storageDetails = useRef<HTMLDivElement>(null);
+  const focusAfterModeChange = useRef<'start' | 'readiness' | null>(null);
   const rawKeywords = useMemo(() => [...new Set(keywords.split(/\r?\n|，|,/)
     .map((item) => item.trim())
     .filter(Boolean))], [keywords]);
   const keywordList = useMemo(() => [...new Set(rawKeywords
     .map((item) => useKeywordPrefix && !GAME_PREFIX.test(item) ? `${KEYWORD_PREFIX} ${item}` : item))], [rawKeywords, useKeywordPrefix]);
-  const keywordError = rawKeywords.length > 12 || keywordList.length > 12 ? '最多填写 12 个搜索词。'
+  const keywordError = rawKeywords.length > MAX_KEYWORDS || keywordList.length > MAX_KEYWORDS ? `最多填写 ${MAX_KEYWORDS} 个关键词。`
     : keywordList.some((keyword) => keyword.length > 40) ? '单个实际搜索词不能超过 40 个字符。' : '';
-  const chromeTransitioning = connectingChrome
-    || chromeStatus?.state === 'connecting'
-    || chromeStatus?.state === 'disconnecting';
-  const chromeReady = chromeStatus?.state === 'connected'
-    && chromeStatus.connected
-    && chromeStatus.loginState === 'logged_in';
-  // 'not_ready' means the extension never answered, so there is no installed version to compare.
-  const extensionOutdated = browserRuntime && chromeStatus !== undefined && chromeStatus.state !== 'not_ready'
-    && isExtensionOutdated(chromeStatus.extensionVersion);
-  // A valid account stays signed in when the server's AI service is unavailable.
-  const analysisUnavailable = settings.analysis?.transport === 'proxy' && Boolean(settings.analysis.account)
-    && !settings.analysis.loginRequired && !settings.analysis.aiConfigured;
+  // Only worth showing when the prefix or deduplication changed what will actually be searched.
+  const searchesDiffer = keywordList.length !== rawKeywords.length || keywordList.some((keyword, index) => keyword !== rawKeywords[index]);
+  const browserRuntime = settings.runtime === 'browser';
+  const readiness = researchReadiness(settings, chromeStatus);
   const analysisRequirement = settings.analysis?.transport === 'direct' ? '需要配置 OpenAI API 密钥'
-    : analysisUnavailable ? 'AI 分析服务暂不可用' : '需要登录 Archtree';
-  const liveCollectionDescription = browserRuntime
-    ? '采集在独立的新 Chrome 窗口中运行，默认使用 4 个标签页，不切换你原窗口的页面。'
-    : '在已连接的 Chrome 中同时读取多个来源，默认使用 4 个标签页。';
-  const chromeActionLabel = browserRuntime ? '连接扩展并检查 B站'
-    : !chromeStatus?.remoteDebuggingEnabled
-    ? '开启并连接 Chrome'
-    : chromeStatus.connected && chromeStatus.loginState !== 'logged_in'
-      ? '重新检查 B站登录'
-      : chromeStatus.connected ? '重新检查连接' : '连接并检查 B站';
+    : readiness.analysisUnavailable ? 'AI 分析服务暂不可用' : '需要登录 Archtree';
+  const durationValid = durationMinutes >= 1 && durationMinutes <= 720;
+  const sourcesValid = maxSources >= 3 && maxSources <= 200;
+  const formIssue = rawKeywords.length === 0 ? '请至少填写 1 个关键词。'
+    : keywordError ? keywordError
+    : !includeVideos && !includeArticles ? '请至少选择一种内容类型。'
+    : !durationValid ? '高级设置中的采集时长需在 1–720 分钟之间。'
+    : !sourcesValid ? '高级设置中的来源数需在 3–200 个之间。' : '';
+  const pendingSteps = mode === 'live' ? readiness.pendingSteps : [];
+  // A re-check of an already connected Chrome keeps the step done but must finish before a run starts.
+  const recheckingChrome = mode === 'live' && readiness.chromeReady && connectingChrome;
+  const canStart = !busy && !formIssue && pendingSteps.length === 0 && !recheckingChrome;
+  const startLabel = busy ? '正在创建调查…'
+    : mode === 'live' && !readiness.aiReady ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始'
+      : readiness.analysisUnavailable ? 'AI 分析服务暂不可用' : '登录 Archtree 后开始'
+    : mode === 'live' && !readiness.chromeReady ? browserRuntime ? '连接扩展后开始' : '连接 Chrome 后开始'
+    : '开始调查';
+  const startHint = formIssue || (pendingSteps.length > 0 ? `还差 ${pendingSteps.length} 步：${pendingSteps.join(' · ')}`
+    : recheckingChrome ? '正在重新检查 B站登录…' : '');
+  // Waiting for the AI service to recover is not something the user can go and finish.
+  const showReadinessJump = !formIssue && pendingSteps.length > 0 && readiness.actionable;
+  const keywordSummary = keywordList.length === 0 ? '未填写'
+    : keywordList.length <= 3 ? keywordList.join('、') : `共 ${keywordList.length} 个：${keywordList.slice(0, 2).join('、')}…`;
+  const contentLabel = [includeVideos && '热门视频', includeArticles && '专栏文章'].filter(Boolean).join('、') || '未选择';
+  const runLabel = mode === 'live' ? `真实调查 · ${browserWindowCount} 个标签页` : '本地演示';
+  const presetSelected = presets.some((preset) => preset.minutes === durationMinutes);
+  const missionSteps = [
+    {title: '关键词', detail: `${keywordList.length} 个搜索词`, done: rawKeywords.length > 0 && !keywordError},
+    {title: '内容范围', detail: `最近 ${contentWindowDays} 天`, done: includeVideos || includeArticles},
+    {title: '采集时长', detail: `最长 ${formatDuration(durationMinutes)}`, done: durationValid},
+    {title: '开始前准备', detail: mode === 'demo' ? '演示无需准备' : `${2 - readiness.pendingSteps.length}/2 项就绪`, done: mode === 'demo' || readiness.pendingSteps.length === 0}
+  ];
+  const currentMission = missionSteps.findIndex((step) => !step.done);
+
+  useEffect(() => {
+    const target = focusAfterModeChange.current;
+    focusAfterModeChange.current = null;
+    // A disabled start button cannot take focus; its hint then says why the research cannot start.
+    if (target === 'start') (startButton.current?.disabled ? startHintBox.current : startButton.current)?.focus();
+    if (target === 'readiness') document.getElementById('research-readiness')?.focus();
+  }, [mode]);
+
+  useEffect(() => {
+    if (storageDetailsOpen) storageDetails.current?.scrollIntoView?.({block: 'nearest'});
+  }, [storageDetailsOpen]);
+
+  const switchMode = (next: 'live' | 'demo', focus: 'start' | 'readiness') => {
+    focusAfterModeChange.current = focus;
+    setMode(next);
+  };
+
+  const showReadiness = () => {
+    const panel = document.getElementById('research-readiness');
+    if (!panel) return;
+    panel.focus({preventScroll: true});
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    panel.scrollIntoView?.({behavior: reduceMotion ? 'auto' : 'smooth', block: 'center'});
+  };
+
+  // Enter on a focused preset would otherwise submit the form and start the research at once.
+  const keepEnterOnPreset = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' && (event.target as HTMLElement).matches('input[type="radio"]')) event.preventDefault();
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (!canStart) return;
     await onStart({
       name: `火影手游玩家反馈调查 · ${new Date().toLocaleDateString('zh-CN')}`,
       durationMinutes,
@@ -139,196 +190,213 @@ export const NewResearch = ({
     setKeywordSaveError('');
   };
 
-  const loginAnalysis = async () => {
-    setAuthenticating(true);
-    setAuthenticationError('');
-    try {
-      if (!onLoginAnalysis) throw new Error('当前版本不支持 Archtree 登录。');
-      await onLoginAnalysis(archtreeIdentifier, archtreePassword);
-      setArchtreePassword('');
-    } catch (error) {
-      setAuthenticationError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthenticating(false);
-    }
-  };
-
-  const logoutAnalysis = async () => {
-    setAuthenticating(true);
-    setAuthenticationError('');
-    try {
-      if (!onLogoutAnalysis) throw new Error('当前版本不支持退出 Archtree。');
-      await onLogoutAnalysis();
-    } catch (error) {
-      setAuthenticationError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setAuthenticating(false);
-    }
-  };
+  // The demo reads fixed samples, so only the duration and the run mode describe what it will do.
+  const summary = (
+    <section className="summary-card" aria-labelledby="summary-title">
+      <div className="summary-heading">
+        <span aria-hidden="true"><ClipboardList size={20}/></span>
+        <div><h2 id="summary-title">本次调查</h2><p>{mode === 'live' ? '将按以下配置采集 B站内容' : '本地演示使用固定的虚构样本，不按关键词和内容范围采集'}</p></div>
+      </div>
+      <dl className="summary-list">
+        {mode === 'live' && <>
+          <div><dt><Search size={16} aria-hidden="true"/>搜索词</dt><dd title={keywordList.join('、')}>{keywordSummary}</dd></div>
+          <div><dt><Files size={16} aria-hidden="true"/>内容范围</dt><dd>{contentLabel}</dd></div>
+          <div><dt><CalendarDays size={16} aria-hidden="true"/>发布时间</dt><dd>最近 {contentWindowDays} 天</dd></div>
+        </>}
+        <div><dt><Clock3 size={16} aria-hidden="true"/>采集时长</dt><dd>{durationValid ? `最多 ${formatDuration(durationMinutes)}` : '待修正'}</dd></div>
+        {mode === 'live' && <div><dt><FileText size={16} aria-hidden="true"/>来源上限</dt><dd>{sourcesValid ? `最多 ${maxSources} 个来源` : '待修正'}</dd></div>}
+        <div><dt>{mode === 'live' ? <Gauge size={16} aria-hidden="true"/> : <FlaskConical size={16} aria-hidden="true"/>}运行方式</dt><dd>{runLabel}</dd></div>
+      </dl>
+    </section>
+  );
+  const preparation = mode === 'live' ? (
+    <ResearchReadiness settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} login={login} onLoginChange={(change) => setLogin((current) => ({...current, ...change}))} onLoginAnalysis={onLoginAnalysis} onOpenGuide={onOpenGuide} onConnectChrome={onConnectChrome} onDisconnectChrome={onDisconnectChrome}/>
+  ) : (
+    <p className="demo-note"><FlaskConical size={16} aria-hidden="true"/><span>本地演示使用虚构样本与本地规则，不调用 AI，也不打开 Chrome。</span><button className="text-action" type="button" onClick={() => switchMode('live', 'readiness')}>切回真实调查</button></p>
+  );
 
   return (
-    <main className="new-research page-grid">
-      <section className="hero-copy">
-        <div className="eyebrow"><Sparkles size={15}/> 原始数据本地保存 · Luna AI 筛选</div>
-        <h1>把社区声音，整理成<br/><em>可行动的产品情报</em></h1>
-        <p>真实调查会完整保存公开意见，再由 Luna 筛选强洞察；演示模式继续使用本地规则。</p>
-        <div className="privacy-note">
-          <Check size={18}/>
-          <div className="privacy-note-content">
-            <span>原始采集数据保存在本机：<strong>{settings.dataRoot}</strong></span>
-            {!browserRuntime && <button className="data-location-button" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
-              <FolderOpen size={16}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
-            </button>}
-            <small>{browserRuntime ? '调查、原文、缓存和报告保存在当前浏览器。请导出 ZIP 备份；清除网站数据会删除本地调查。采集和分析期间请保持此网页打开。' : '真实模式会把不含用户名、UID和主页的评论语境经由私人服务器发送给 OpenAI；更改位置不会移动原文件。'}</small>
-          </div>
-        </div>
-      </section>
+    <main className="new-research">
+      <header className="new-research-header">
+        <h1>新建调查</h1>
+        <p>把社区声音，整理成可行动的产品情报</p>
+      </header>
 
-      <form className="setup-card" onSubmit={submit}>
-        <ol className="shinobi-mission-score" aria-hidden="true">
-          <li className="complete"><span>1</span><strong>设定时长</strong><small>最长 {durationMinutes} 分钟</small></li>
-          <li className="current"><span>2</span><strong>情报范围</strong><small>{keywordList.length} 个关键词 · {contentWindowDays} 天</small></li>
-          <li><span>3</span><strong>调查方式</strong><small>{mode === 'live' ? `真实调查 · ${browserWindowCount} 标签页` : '演示模式'}</small></li>
-          <li><span>4</span><strong>确认任务</strong><small>最多 {maxSources} 个来源</small></li>
-        </ol>
-        <div className="step-heading"><span>1</span><div><h2>最长采集多久？</h2><p>达到时长或来源上限时结束，暂停时间不计入</p></div></div>
-        <div className="preset-grid">
-          {presets.map((preset) => (
-            <button
-              className={`preset ${durationMinutes === preset.minutes ? 'selected' : ''}`}
-              type="button"
-              key={preset.minutes}
-              onClick={() => setDuration(preset.minutes)}
-            >
-              <Clock3 size={19}/><strong>{preset.minutes < 60 ? `${preset.minutes} 分钟` : `${preset.minutes / 60} 小时`}</strong>
-              <span>{preset.title}</span><small>{preset.description}</small>
-            </button>
-          ))}
-        </div>
-        <label className="custom-duration">
-          <span><strong>最长采集时长（分钟）</strong><small>可设置 1–720 分钟；来源先采完时会提前结束</small></span>
-          <div><input aria-label="最长采集时长（分钟）" type="number" min={1} max={720} value={durationMinutes} onChange={(event) => setDuration(Number(event.target.value))}/><em>分钟</em></div>
-        </label>
+      <form className="new-research-layout" onSubmit={submit}>
+        <div className="research-form">
+          <ol className="shinobi-mission-score" aria-hidden="true">
+            {missionSteps.map((step, index) => (
+              <li key={step.title} className={step.done ? 'complete' : index === currentMission ? 'current' : ''}><span>{index < 3 ? index + 1 : step.done ? '✓' : '…'}</span><strong>{step.title}</strong><small>{step.detail}</small></li>
+            ))}
+          </ol>
 
-        <div className="form-divider"/>
-        <div className="step-heading"><span>2</span><div><h2>调查哪些内容？</h2><p>默认设置可以直接开始</p></div></div>
-        <div className="keyword-heading">
-          <label className="field-label" htmlFor="keywords">关键词 <small>每行一个</small></label>
-          <label className="keyword-prefix-option"><input type="checkbox" checked={useKeywordPrefix} disabled={savingKeywords} onChange={(event) => {setUseKeywordPrefix(event.target.checked); clearKeywordSaveMessage();}}/><span>自动添加「火影手游」前缀</span></label>
-        </div>
-        <div className="input-with-icon"><Search size={18}/><textarea id="keywords" value={keywords} disabled={savingKeywords} onChange={(event) => {setKeywords(event.target.value); clearKeywordSaveMessage();}} rows={3} placeholder={'十月活动\n新忍者评价\n氪金意愿'} aria-describedby="keyword-help keyword-error" aria-invalid={Boolean(keywordError)}/></div>
-        <p className="keyword-help" id="keyword-help">{useKeywordPrefix ? '只填主题即可；已带游戏名前缀的词不会重复添加。' : '前缀已关闭，将按你填写的关键词原样搜索。'}</p>
-        {keywordList.length > 0 && <div className="keyword-search-preview" aria-label="实际搜索词" aria-live="polite"><small>实际搜索词</small><ul>{keywordList.map((keyword) => <li key={keyword}>{keyword}</li>)}</ul></div>}
-        <p className="keyword-error" id="keyword-error" role={keywordError ? 'alert' : undefined}>{keywordError}</p>
-        <div className="keyword-save-row"><button className="keyword-save-button" type="button" disabled={!onSaveKeywords || savingKeywords || keywordList.length === 0 || Boolean(keywordError)} onClick={() => void saveKeywords()}>{savingKeywords ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {savingKeywords ? '正在保存…' : '保存关键词'}</button><small role="status">{keywordSaveMessage || '同时记住关键词和前缀开关。'}</small></div>
-        {keywordSaveError && <p className="keyword-error" role="alert">{keywordSaveError}</p>}
-        <div className="inline-options">
-          <label className="check-option"><input type="checkbox" checked={includeVideos} onChange={(event) => setVideos(event.target.checked)}/><span>热门视频</span></label>
-          <label className="check-option"><input type="checkbox" checked={includeArticles} onChange={(event) => setArticles(event.target.checked)}/><span>专栏文章</span></label>
-          <label className="select-option"><span>内容范围</span><select value={contentWindowDays} onChange={(event) => setWindow(Number(event.target.value))}><option value={7}>最近 7 天</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label>
-        </div>
+          <section className="research-step">
+            <div className="research-step-heading">
+              <span className="research-step-number" aria-hidden="true">1</span>
+              <div>
+                <h2 id="keywords-title">调查关键词</h2>
+                <p>每行一个，用于在 B站搜索相关内容</p>
+              </div>
+              <label className="prefix-toggle"><input type="checkbox" checked={useKeywordPrefix} disabled={savingKeywords} onChange={(event) => {setUseKeywordPrefix(event.target.checked); clearKeywordSaveMessage();}}/><span>自动添加「火影手游」前缀</span></label>
+            </div>
+            <textarea className="keyword-input" id="keywords" aria-label="调查关键词" value={keywords} disabled={savingKeywords} onChange={(event) => {setKeywords(event.target.value); clearKeywordSaveMessage();}} rows={3} placeholder={'十月活动\n新忍者评价\n氪金意愿'} aria-describedby="keyword-help keyword-count keyword-error" aria-invalid={Boolean(keywordError)}/>
+            <div className="keyword-meta">
+              <p className="field-hint" id="keyword-help">{useKeywordPrefix ? '只填主题即可，例如「十月活动」；已带游戏名的词不会重复添加。' : '前缀已关闭，将按你填写的关键词原样搜索。'}</p>
+              <span className={`keyword-count ${rawKeywords.length > MAX_KEYWORDS ? 'over' : ''}`} id="keyword-count">{rawKeywords.length} / {MAX_KEYWORDS} 个关键词</span>
+            </div>
+            {keywordList.length > 0 && searchesDiffer && <div className="keyword-search-preview" aria-label="实际搜索词" aria-live="polite"><small>实际搜索</small><ul>{keywordList.map((keyword) => <li key={keyword}>{keyword}</li>)}</ul></div>}
+            <p className="field-error" id="keyword-error" role={keywordError ? 'alert' : undefined}>{keywordError}</p>
+            {onSaveKeywords && <div className="keyword-save-row">
+              <button className="text-action" type="button" title="同时记住关键词和前缀开关" disabled={savingKeywords || keywordList.length === 0 || Boolean(keywordError)} onClick={() => void saveKeywords()}>{savingKeywords ? <LoaderCircle className="spin" size={15}/> : <Save size={15}/>} {savingKeywords ? '正在保存…' : '保存关键词'}</button>
+              <small role="status">{keywordSaveMessage}</small>
+            </div>}
+            {keywordSaveError && <p className="field-error" role="alert">{keywordSaveError}</p>}
+          </section>
 
-        <div className="advanced-heading">
-          <strong>高级选项</strong>
-          <small>选择调查运行模式</small>
-        </div>
-        <div className="advanced-panel">
-          <label className={`mode-card ${mode === 'live' ? 'selected' : ''}`}><input type="radio" checked={mode === 'live'} onChange={() => setMode('live')}/><Search size={20}/><span><strong>真实调查 · Luna AI</strong><small>{settings.analysis?.aiConfigured ? `${settings.analysis.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${analysisRequirement}`}</small></span></label>
-          <label className={`mode-card ${mode === 'demo' ? 'selected' : ''}`}><input type="radio" checked={mode === 'demo'} onChange={() => setMode('demo')}/><FlaskConical size={20}/><span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span></label>
-        </div>
-        <label className={`parallel-windows ${mode === 'demo' ? 'disabled' : ''}`}>
-          <span className="parallel-windows-icon"><Gauge size={20}/></span>
-          <span className="parallel-windows-copy">
-            <strong>并行调查标签页</strong>
-            <small>{mode === 'live' ? liveCollectionDescription : '演示模式不打开 Chrome 标签页。'}</small>
-          </span>
-          <select
-            aria-label="并行调查标签页数"
-            value={browserWindowCount}
-            disabled={mode === 'demo'}
-            onChange={(event) => setBrowserWindowCount(Number(event.target.value))}
-          >
-            <option value={4}>4 个 · 默认</option>
-            <option value={8}>8 个 · 更快</option>
-          </select>
-        </label>
-        {mode === 'live' && settings.analysis?.maxConcurrentRequests !== undefined && <p className="keyword-help">采集标签页数只控制读取来源。AI 分析独立运行，最多 {settings.analysis.maxConcurrentRequests} 个请求并行，遇到限流时自动减少；每次详析最多 {settings.analysis.batchSize ?? 10} 条记录。</p>}
-        <label className="parallel-windows source-limit">
-          <span className="parallel-windows-icon"><Files size={20}/></span>
-          <span className="parallel-windows-copy">
-            <strong>最多采集来源数</strong>
-            <small>视频和专栏合计，可设置 3–200 个；采完这个数量会生成报告。</small>
-          </span>
-          <div className="source-limit-input"><input aria-label="最多采集来源数" type="number" min={3} max={200} value={maxSources} onChange={(event) => setMaxSources(Number(event.target.value))}/><em>个</em></div>
-        </label>
-        <p className="stop-rule-note"><CircleAlert size={16}/> 本次调查将在“达到 {durationMinutes} 分钟”或“处理完 {maxSources} 个来源”时结束，以先发生者为准。</p>
+          <section className="research-step">
+            <div className="research-step-heading">
+              <span className="research-step-number" aria-hidden="true">2</span>
+              <div>
+                <h2 id="scope-title">内容范围</h2>
+                <p>选择要采集的内容类型和发布时间</p>
+              </div>
+            </div>
+            <div className="scope-options">
+              <label className={`choice-card ${includeVideos ? 'selected' : ''}`}>
+                <input type="checkbox" checked={includeVideos} onChange={(event) => setVideos(event.target.checked)}/>
+                <Video size={20} aria-hidden="true"/>
+                <span><strong>热门视频</strong><small>B站视频及评论区</small></span>
+              </label>
+              <label className={`choice-card ${includeArticles ? 'selected' : ''}`}>
+                <input type="checkbox" checked={includeArticles} onChange={(event) => setArticles(event.target.checked)}/>
+                <FileText size={20} aria-hidden="true"/>
+                <span><strong>专栏文章</strong><small>B站专栏及评论区</small></span>
+              </label>
+              <label className="window-select">
+                <CalendarDays size={19} aria-hidden="true"/>
+                <span className="visually-hidden">发布时间范围</span>
+                <select value={contentWindowDays} onChange={(event) => setWindow(Number(event.target.value))}>
+                  <option value={7}>最近 7 天</option>
+                  <option value={30}>最近 30 天</option>
+                  <option value={90}>最近 90 天</option>
+                </select>
+                <ChevronDown size={16} aria-hidden="true"/>
+              </label>
+            </div>
+          </section>
 
-        {settings.analysis?.transport === 'proxy' && settings.analysis.loginRequired && (
-          <section className="analysis-activation-card" aria-labelledby="analysis-activation-title">
-            <span className="analysis-activation-icon"><KeyRound size={22}/></span>
-            <div className="analysis-activation-copy">
-              <strong id="analysis-activation-title">登录 Archtree 后使用 AI 分析</strong>
-              <small>使用任意普通 Archtree 账号即可。密码不会保存，OpenAI 密钥也不会进入这台电脑或 EXE。</small>
-              {browserRuntime ? <div className="analysis-activation-controls"><a className="secondary-action" href="/auth/login-web?returnTo=%2Fnaruto%2F">前往 Archtree 登录</a></div> : <div className="analysis-activation-controls">
-                <input aria-label="Archtree 邮箱或用户名" autoComplete="username" value={archtreeIdentifier} onChange={(event) => setArchtreeIdentifier(event.target.value)} placeholder="邮箱或用户名"/>
-                <input aria-label="Archtree 密码" type="password" autoComplete="current-password" value={archtreePassword} onChange={(event) => setArchtreePassword(event.target.value)} placeholder="密码"/>
-                <button type="button" disabled={authenticating || !archtreeIdentifier.trim() || !archtreePassword} onClick={() => void loginAnalysis()}>
-                  {authenticating ? <LoaderCircle className="spin" size={17}/> : <KeyRound size={17}/>} {authenticating ? '正在登录…' : '登录'}
+          <section className="research-step">
+            <div className="research-step-heading">
+              <span className="research-step-number" aria-hidden="true">3</span>
+              <div>
+                <h2 id="duration-title">采集时长</h2>
+                <p>达到时长或来源上限后自动结束，暂停时间不计入</p>
+              </div>
+            </div>
+            <div className="duration-options" role="radiogroup" aria-labelledby="duration-title" onKeyDown={keepEnterOnPreset}>
+              {presets.map((preset) => (
+                <label className={`choice-card duration-option ${durationMinutes === preset.minutes ? 'selected' : ''}`} key={preset.minutes}>
+                  <input type="radio" name="duration" checked={durationMinutes === preset.minutes} onChange={() => setDuration(preset.minutes)}/>
+                  <span><strong>{formatDuration(preset.minutes)}</strong><small>{preset.title}</small></span>
+                </label>
+              ))}
+            </div>
+            {!presetSelected && <p className="field-hint">已自定义为 {durationValid ? formatDuration(durationMinutes) : `${durationMinutes} 分钟`}，可在高级设置中修改。</p>}
+          </section>
+
+          <section className="research-step advanced-step">
+            <h2 className="advanced-heading">
+              <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} aria-controls="advanced-settings" onClick={() => setAdvancedOpen((open) => !open)}>
+                <span className="research-step-number" aria-hidden="true">4</span>
+                <span className="advanced-toggle-copy">
+                  <strong>高级设置</strong>
+                  <small>{advancedOpen ? '默认配置即可开始' : mode === 'live' ? `真实调查 · ${browserWindowCount} 个标签页 · 最多 ${maxSources} 个来源` : '本地演示 · 固定虚构样本'}</small>
+                </span>
+                <ChevronDown className="advanced-chevron" size={20} aria-hidden="true"/>
+              </button>
+            </h2>
+            {advancedOpen && <div className="advanced-settings" id="advanced-settings">
+              <fieldset className="advanced-group">
+                <legend>运行模式</legend>
+                <div className="mode-options">
+                  <label className={`choice-card ${mode === 'live' ? 'selected' : ''}`}>
+                    <input type="radio" name="mode" checked={mode === 'live'} onChange={() => setMode('live')}/>
+                    <Search size={19} aria-hidden="true"/>
+                    <span><strong>真实调查 · Luna AI</strong><small>{readiness.aiReady ? `${settings.analysis?.model} 已就绪` : `${settings.analysis?.model ?? 'Luna'} · ${analysisRequirement}`}</small></span>
+                  </label>
+                  <label className={`choice-card ${mode === 'demo' ? 'selected' : ''}`}>
+                    <input type="radio" name="mode" checked={mode === 'demo'} onChange={() => setMode('demo')}/>
+                    <FlaskConical size={19} aria-hidden="true"/>
+                    <span><strong>本地演示</strong><small>虚构样本与本地规则，不调用 AI</small></span>
+                  </label>
+                </div>
+              </fieldset>
+              <div className="advanced-row">
+                <span className="advanced-row-icon" aria-hidden="true"><Clock3 size={18}/></span>
+                <span className="advanced-row-copy"><strong>最长采集时长</strong><small id="duration-range">可设置 1–720 分钟；来源先采完时会提前结束</small></span>
+                <span className="number-input"><input aria-label="最长采集时长（分钟）" aria-invalid={!durationValid} aria-describedby={durationValid ? 'duration-range' : 'duration-range duration-error'} type="number" min={1} max={720} value={durationMinutes} onChange={(event) => setDuration(Number(event.target.value))}/><em>分钟</em></span>
+                {!durationValid && <p className="field-error" id="duration-error">请输入 1–720 之间的分钟数。</p>}
+              </div>
+              <div className="advanced-row">
+                <span className="advanced-row-icon" aria-hidden="true"><Files size={18}/></span>
+                <span className="advanced-row-copy"><strong>最多采集来源数</strong><small id="sources-range">{mode === 'demo' ? '演示模式使用固定样本，不受此项限制；真实调查时视频和专栏合计 3–200 个' : '视频和专栏合计，可设置 3–200 个；采完这个数量会生成报告'}</small></span>
+                <span className="number-input"><input aria-label="最多采集来源数" aria-invalid={!sourcesValid} aria-describedby={sourcesValid ? 'sources-range' : 'sources-range sources-error'} type="number" min={3} max={200} value={maxSources} onChange={(event) => setMaxSources(Number(event.target.value))}/><em>个</em></span>
+                {!sourcesValid && <p className="field-error" id="sources-error">请输入 3–200 之间的来源数。</p>}
+              </div>
+              <div className={`advanced-row ${mode === 'demo' ? 'disabled' : ''}`}>
+                <span className="advanced-row-icon" aria-hidden="true"><Gauge size={18}/></span>
+                <span className="advanced-row-copy"><strong>并行调查标签页</strong><small>{mode === 'demo' ? '演示模式不打开 Chrome 标签页。'
+                  : browserRuntime ? '在独立的新 Chrome 窗口中运行，不切换你原窗口的页面。' : '在已连接的 Chrome 中同时读取多个来源。'}</small></span>
+                <select aria-label="并行调查标签页数" value={browserWindowCount} disabled={mode === 'demo'} onChange={(event) => setBrowserWindowCount(Number(event.target.value))}>
+                  <option value={4}>4 个 · 默认</option>
+                  <option value={8}>8 个 · 更快</option>
+                </select>
+              </div>
+              {mode === 'live' && settings.analysis?.maxConcurrentRequests !== undefined && <p className="field-hint">标签页数只控制读取来源。AI 分析独立运行，最多 {settings.analysis.maxConcurrentRequests} 个请求并行，遇到限流时自动减少；每次详析最多 {settings.analysis.batchSize ?? 10} 条记录。</p>}
+              {!browserRuntime && <div className="advanced-row">
+                <span className="advanced-row-icon" aria-hidden="true"><Database size={18}/></span>
+                <span className="advanced-row-copy"><strong>数据存放位置</strong><small className="data-root-path">{settings.dataRoot}</small><small>更改位置不会移动原文件。</small></span>
+                <button className="text-action bordered" type="button" disabled={selectingDataRoot || settings.dataRootLocked} onClick={() => void onSelectDataRoot()}>
+                  <FolderOpen size={15}/>{selectingDataRoot ? '正在选择…' : settings.dataRootLocked ? '位置由环境配置固定' : '选择存放位置'}
                 </button>
               </div>}
-              {authenticationError && <p role="alert">{authenticationError}</p>}
-            </div>
+            </div>}
           </section>
-        )}
+        </div>
 
-        {settings.analysis?.transport === 'proxy' && settings.analysis.account && (
-          <section className="analysis-activation-card analysis-account-card" aria-label="Archtree 登录状态">
-            <span className="analysis-activation-icon"><CircleCheck size={22}/></span>
-            <div className="analysis-activation-copy">
-              <strong>已登录 Archtree</strong>
-              <small>{settings.analysis.account.email} · 登录有效</small>
-              {analysisUnavailable && <p role="status">AI 分析服务暂不可用，请稍后重试。</p>}
-              <button className="analysis-logout-button" type="button" disabled={authenticating} onClick={() => void logoutAnalysis()}>
-                {authenticating ? <LoaderCircle className="spin" size={17}/> : <LogOut size={17}/>} {authenticating ? '正在退出…' : '退出或更换账号'}
-              </button>
-              {authenticationError && <p role="alert">{authenticationError}</p>}
-            </div>
-          </section>
-        )}
-
-        <section className={`chrome-connect-card chrome-connect-prominent ${chromeReady ? 'chrome-connected' : ''}`} aria-labelledby="chrome-connect-title">
-          <div className="chrome-connect-heading">
-            <span>{chromeReady ? <CircleCheck size={21}/> : <MonitorCog size={21}/>}</span>
-            <div>
-              <strong id="chrome-connect-title">{chromeReady ? '已连接你的 B站账号' : browserRuntime ? '连接 B站采集扩展' : '连接已经登录 B站的 Chrome'}</strong>
-              <small>{chromeReady
-                ? `${chromeStatus?.accountName ?? '当前账号'}${chromeStatus?.accountUidSuffix ? ` · UID 尾号 ${chromeStatus.accountUidSuffix}` : ''}`
-                : browserRuntime ? '在同一个 Chrome 中启用扩展并登录 B站，连接后即可开始采集。'
-                  : '无需填写端口、账号或 Cookie，工具会自动发现当前电脑上的 Chrome。'}</small>
-            </div>
+        <div className="research-side">
+          <div className="research-side-scroll">
+            {/* Preparation keeps one child slot so a status poll never remounts it; the stateless summary moves around it. */}
+            {pendingSteps.length === 0 && summary}
+            {preparation}
+            {pendingSteps.length > 0 && summary}
+            {/* Inside the scroller so opening the details never squeezes the readiness list into a peephole. */}
+            {storageDetailsOpen && <div className="storage-details" id="storage-details" ref={storageDetails}>
+              {browserRuntime ? <>
+                <p>调查、原文、缓存和报告保存在当前浏览器。请在「历史调查」中导出 ZIP 备份；清除网站数据会删除本地调查。采集和分析期间请保持此网页打开。</p>
+                <p>扩展只采集 B站公开可见内容，并只关闭自己创建的调查标签页；原始数据不上传。</p>
+              </> : <p>{settings.dataRootLocked ? '原始采集数据保存在本机，存放位置由环境配置固定。' : '原始采集数据保存在本机，可在高级设置中更改存放位置。'}</p>}
+              <p>只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>
+            </div>}
           </div>
-          <p className={`chrome-connect-status ${chromeStatus?.state === 'error' || chromeStatus?.loginState === 'logged_out' ? 'warning' : ''}`}>
-            {chromeReady ? <CircleCheck size={17}/> : chromeTransitioning ? <LoaderCircle className="spin" size={17}/> : <CircleAlert size={17}/>}
-            <span>{chromeStatus?.message ?? '正在检测 Chrome…'}</span>
-          </p>
-          {extensionOutdated && <p className="chrome-connect-status warning" role="alert">
-            <CircleAlert size={17}/>
-            <span>{chromeStatus?.extensionVersion ? `当前扩展 ${chromeStatus.extensionVersion} 不是最新版本` : '无法确认当前扩展版本'}，最新版本为 {latestExtensionVersion}。请打开图文教程下载新版，替换原扩展文件夹内容，在 Chrome 扩展管理页点击“重新加载”后刷新此页面。</span>
-          </p>}
-          <div className="chrome-connect-actions">
-            <button className="chrome-settings-button" type="button" disabled={chromeTransitioning} onClick={() => void onConnectChrome()}>
-              {chromeTransitioning ? <LoaderCircle className="spin" size={18}/> : <MonitorCog size={18}/>} {chromeStatus?.state === 'disconnecting' ? '正在断开 Chrome…' : connectingChrome || chromeStatus?.state === 'connecting' ? '等待 Chrome 授权…' : chromeActionLabel}
+
+          <div className="start-action">
+            {startHint && <p className="start-hint" ref={startHintBox} tabIndex={-1}><span id="start-hint">{startHint}</span>
+              {showReadinessJump && <button className="text-action readiness-jump" type="button" onClick={showReadiness}>去完成</button>}
+            </p>}
+            <button className="primary-action" type="submit" ref={startButton} disabled={!canStart} aria-describedby={startHint ? 'start-hint' : undefined}>
+              {startLabel} <ArrowRight size={19} aria-hidden="true"/>
             </button>
-            <button className="chrome-guide-link" type="button" onClick={onOpenGuide}><BookOpen size={17}/>图文教程</button>
-            {chromeStatus?.connected && <button className="chrome-guide-link" type="button" disabled={chromeTransitioning || (chromeStatus.activeInvestigations ?? 0) > 0} onClick={() => void onDisconnectChrome()}><Unplug size={17}/>断开</button>}
+            {mode === 'live' && pendingSteps.length > 0 && !busy && <button className="text-action demo-shortcut" type="button" onClick={() => switchMode('demo', 'start')}>先用演示数据试试</button>}
           </div>
-          <p>{browserRuntime ? '扩展只采集 B站公开可见内容，并只关闭自己创建的调查标签页；原始数据不上传。' : '工具只操作自己创建的调查标签页；连接期间请关闭网银、邮箱等敏感页面。'}</p>
-        </section>
 
-        <button className="primary-action" disabled={busy || durationMinutes < 1 || durationMinutes > 720 || maxSources < 3 || maxSources > 200 || keywordList.length === 0 || Boolean(keywordError) || (!includeVideos && !includeArticles) || (mode === 'live' && (!chromeReady || !settings.analysis?.aiConfigured))}>
-          {busy ? '正在创建调查…' : mode === 'live' && !settings.analysis?.aiConfigured ? settings.analysis?.transport === 'direct' ? '配置 AI 后开始' : analysisUnavailable ? 'AI 分析服务暂不可用' : '登录 Archtree 后开始' : mode === 'live' && !chromeReady ? '连接 Chrome 后开始' : '开始调查'} <ArrowRight size={19}/>
-        </button>
-        <p className="compliance-copy">只读取公开可见页面；真实模式仅经私人服务器向 OpenAI 发送去标识化的评论分析语境。</p>
+          <div className="storage-note">
+            <p><ShieldCheck size={17} aria-hidden="true"/><span>{browserRuntime ? '数据保存在当前浏览器，请定期备份' : '原始数据保存在本机'}</span>
+              <button className="text-action" type="button" aria-expanded={storageDetailsOpen} aria-controls="storage-details" onClick={() => setStorageDetailsOpen((open) => !open)}>{storageDetailsOpen ? '收起' : '了解详情'}</button>
+            </p>
+            {mode === 'live' && <p className="privacy-line">真实调查会把去标识化的评论语境经私人服务器发送给 AI 分析。</p>}
+          </div>
+        </div>
       </form>
     </main>
   );

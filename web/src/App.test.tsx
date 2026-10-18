@@ -59,12 +59,14 @@ describe('hosted displayed account transitions', () => {
     await waitFor(() => expect(api.settings).toHaveBeenCalledTimes(2));
     act(() => {window.dispatchEvent(new CustomEvent('naruto:analysis-account-change'));});
     expect(screen.queryByText('account-A@example.test · 登录有效')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: /Archtree 账号/})).not.toBeInTheDocument();
     expect(screen.getByRole('link', {name: '前往 Archtree 登录'})).toBeVisible();
     await act(async () => {resolveNew(settings('account-B')); await newRefresh;});
     expect(await screen.findByText('account-B@example.test · 登录有效')).toBeVisible();
     await act(async () => {resolveOld(settings('account-A')); await oldRefresh;});
     expect(screen.getByText('account-B@example.test · 登录有效')).toBeVisible();
     expect(screen.queryByText('account-A@example.test · 登录有效')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'Archtree 账号 account-B@example.test'})).toBeVisible();
   });
 });
 

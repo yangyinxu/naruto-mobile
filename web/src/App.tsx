@@ -9,6 +9,7 @@
 
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Archive, BookOpen, Flame, Palette, PlusCircle, X} from 'lucide-react';
+import {AccountMenu} from './components/AccountMenu';
 import {ChromeGuide} from './components/ChromeGuide';
 import {ExtensionGuide} from './components/ExtensionGuide';
 import {History} from './components/History';
@@ -153,8 +154,10 @@ export default function App() {
     }
     setConnectingChrome(true);
     setError('');
+    // Re-checking an already connected Chrome only refreshes the B站 account, so it keeps the connected status.
+    const recheck = chromeStatus?.state === 'connected' && chromeStatus.connected;
     try {
-      setChromeStatus((current) => current ? {...current, state: 'connecting', message: settings?.runtime === 'browser'
+      if (!recheck) setChromeStatus((current) => current ? {...current, state: 'connecting', message: settings?.runtime === 'browser'
         ? '正在连接扩展并检查 B站登录状态，请稍候。' : '正在请求连接，请在 Chrome 弹窗中点击“允许”。'} : current);
       setChromeStatus(await api.connectChrome());
     } catch (reason) {
@@ -234,12 +237,13 @@ export default function App() {
               <option value="shinobi">忍者密卷</option>
             </select>
           </label>
-          <div className="local-pill"><span/>{settings.runtime === 'browser' ? '数据在本机' : '本地运行'}</div>
+          <div className="local-pill" title={settings.runtime === 'browser' ? '数据在本机' : '本地运行'}><span/>{settings.runtime === 'browser' ? '数据在本机' : '本地运行'}</div>
+          <AccountMenu analysis={settings.analysis} onLogout={logoutAnalysis}/>
         </div>
       </header>
 
       {view === 'new' && (
-        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSaveKeywords={saveKeywords} onLoginAnalysis={loginAnalysis} onLogoutAnalysis={logoutAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
+        <NewResearch settings={settings} chromeStatus={chromeStatus} connectingChrome={connectingChrome} busy={busy} selectingDataRoot={selectingDataRoot} onStart={start} onSelectDataRoot={selectDataRoot} onSaveKeywords={saveKeywords} onLoginAnalysis={loginAnalysis} onOpenGuide={() => setView('guide')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
       )}
       {view === 'guide' && settings.runtime === 'browser' && (
         <ExtensionGuide chromeStatus={chromeStatus} connectingChrome={connectingChrome} onBack={() => setView('new')} onConnectChrome={connectChrome} onDisconnectChrome={disconnectChrome}/>
