@@ -5,7 +5,7 @@
  *   Functions: syntaxFor, wrapList, unique, titleOf, collectTests, isFunctionLike, hasExport,
  *              topLevelStatements, codeCatalog, cssCatalog, shellCatalog, pythonCatalog, yamlCatalog,
  *              anchorFactory, markdownLines, markdownCatalog, catalogLines, stripCatalog, insertCatalog,
- *              renderBlock, candidateFiles, main
+ *              renderBlock, toLf, lineEndingOf, candidateFiles, main
  *   Constants: repositoryRoot, lineThreshold, wrapWidth, generatorCommand, excluded, markers, testCallee
  * @end-catalog */
 
@@ -295,40 +295,59 @@ const renderBlock = (syntax, lines) => {
   return [header, ...lines.map(line), end, ...(syntax === 'markdown' ? [] : [''])];
 };
 
+const toLf = content => content.replace(/\r\n/g, '\n');
+
+/** A Windows checkout (`core.autocrlf`) has CRLF files; a file keeps whichever line ending most of its lines use. */
+const lineEndingOf = content => {
+  const crlf = content.match(/\r\n/g)?.length ?? 0;
+  return crlf * 2 > (content.match(/\n/g)?.length ?? 0) ? '\r\n' : '\n';
+};
+
 /** Returns the file content with an up-to-date catalog, or without one when the file is short. */
 export const catalogFile = (file, content) => {
   const syntax = syntaxFor(file);
-  const bare = stripCatalog(content, syntax);
-  if (bare.split('\n').length <= lineThreshold) return { content: bare, empty: false };
+  const eol = lineEndingOf(content);
+  const restore = text => eol === '\n' ? text : text.replace(/\n/g, eol);
+  const bare = stripCatalog(toLf(content), syntax);
+  if (bare.split('\n').length <= lineThreshold) return { content: restore(bare), empty: false };
   const lines = catalogLines(file, syntax, bare);
-  if (!lines.length) return { content: bare, empty: true };
-  return { content: insertCatalog(bare, syntax, renderBlock(syntax, lines)), empty: false };
+  if (!lines.length) return { content: restore(bare), empty: true };
+  return { content: restore(insertCatalog(bare, syntax, renderBlock(syntax, lines))), empty: false };
 };
 
 const candidateFiles = () => execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'],
   { cwd: repositoryRoot, encoding: 'utf8' }).split('\n')
   .filter(file => file && syntaxFor(file) && !excluded.some(pattern => pattern.test(file)));
 
+/** Every catalog is computed before any file is written, so one malformed file cannot leave a partial update. */
 const main = async () => {
   const check = process.argv.includes('--check');
   const stale = [];
   const empty = [];
+  const failed = [];
   for (const file of candidateFiles()) {
     const absolute = path.join(repositoryRoot, file);
     let content;
     try { content = await readFile(absolute, 'utf8'); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    const result = catalogFile(file, content);
+    let result;
+    try { result = catalogFile(file, content); } catch (error) { failed.push(`  ${file}: ${error.message}`); continue; }
     if (result.empty) empty.push(file);
-    if (result.content === content) continue;
-    stale.push(file);
-    if (!check) await writeFile(absolute, result.content);
+    // Line endings alone never make a catalog stale.
+    if (toLf(result.content) === toLf(content)) continue;
+    stale.push({ file, absolute, content: result.content });
   }
   for (const file of empty) console.warn(`No catalog entries could be derived for ${file}.`);
-  if (check && stale.length) {
-    console.error(`Stale or missing file catalogs (run \`${generatorCommand}\`):\n${stale.map(file => `  ${file}`).join('\n')}`);
+  if (failed.length) {
+    console.error(`Malformed file catalogs${check ? '' : '; no files were changed'}:\n${failed.join('\n')}`);
     process.exitCode = 1;
     return;
   }
+  if (check && stale.length) {
+    console.error(`Stale or missing file catalogs (run \`${generatorCommand}\`):\n${stale.map(({ file }) => `  ${file}`).join('\n')}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!check) for (const { absolute, content } of stale) await writeFile(absolute, content);
   console.log(check ? 'File catalogs are current.' : `Updated ${stale.length} file catalogs.`);
 };
 
